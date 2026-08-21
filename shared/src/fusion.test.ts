@@ -1,4 +1,4 @@
-import { test, expect } from "bun:test";
+import { test, expect } from "vitest";
 import { fuse, decide, type Combiner } from "./fusion";
 import type { Modality } from "./types";
 

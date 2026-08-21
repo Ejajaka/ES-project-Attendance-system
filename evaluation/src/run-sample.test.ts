@@ -1,4 +1,4 @@
-import { test, expect } from "bun:test";
+import { test, expect } from "vitest";
 import { buildSampleScenario, runComparison } from "./run-sample";
 
 test("the sample scenario shows fusion beating every single modality", () => {

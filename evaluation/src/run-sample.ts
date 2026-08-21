@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 import {
   evaluateInstances,
   fuse,
@@ -87,8 +89,14 @@ export function printComparison(c: Comparison): string {
   return rows.join("\n");
 }
 
-// Allow running directly: `bun run src/run-sample.ts`
-if (import.meta.main) {
+// Allow running directly: `npm run run:sample`. This entry-point check also
+// works on Node 20 (bun's `import.meta.main` is unavailable below Node 22.18).
+const isDirectRun =
+  typeof process !== "undefined" &&
+  process.argv[1] != null &&
+  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (isDirectRun) {
   const scenario = buildSampleScenario();
   const comparison = runComparison(scenario);
   console.log(printComparison(comparison));

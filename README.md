@@ -37,11 +37,11 @@ Early-stage research project. See `PLAN.md` for the working plan, open questions
 
 ## Repository Structure
 
-Bun-workspaces monorepo (see `docs/adr/0005-monorepo-structure.md`):
+npm-workspaces monorepo (see `docs/adr/0005-monorepo-structure.md`):
 
 ```
 /shared/      # Pure, framework-free logic: rolling code, per-modality confidence,
-              #   fusion, evaluation metrics, Zod report schemas. TDD-tested in bun.
+              #   fusion, evaluation metrics, Zod report schemas. Vitest-tested.
 /server/      # Hono fusion server (runs on Bun or Cloudflare Workers). Ingests
               #   reports, re-verifies rolling codes, computes presence + evaluates
               #   against manual ground truth.
@@ -55,21 +55,21 @@ README.md
 
 ## Quick start
 
-Prerequisites: `bun` (>=1.3) and, for the app, the Expo toolchain + a device
+Prerequisites: Node (>=20) + npm and, for the app, the Expo toolchain + a device
 or emulator (the native modules require Android SDK / Xcode to build).
 
 ```bash
-# install everything (bun workspaces)
-bun install
+# install everything (npm workspaces)
+npm install
 
-# run all tests (64, across shared/server/evaluation/app logic)
-bun test
+# run all tests (65; shared/server/evaluation/app logic) with Vitest
+npm test
 
 # start the fusion server
-cd server && bun run dev          # http://localhost:8787
+cd server && npm run dev          # http://localhost:8787
 
 # run the comparative evaluation demo
-cd evaluation && bun run run:sample
+cd evaluation && npm run run:sample
 ```
 
 ### Server API
@@ -82,15 +82,15 @@ cd evaluation && bun run run:sample
 ### App
 ```bash
 cd app
-bunx expo start          # then run on Android/iOS
+npx expo start          # then run on Android/iOS
 ```
 Pick **Soshin** (room-side: broadcasts the ultrasonic code + BLE beacon) or
 **Jushin** (phone-side: connects to the Soshin WiFi, listens for the code,
 reports BLE/WiFi). Set `EXPO_PUBLIC_SERVER_URL` to point at the fusion server
 (default `http://10.0.2.2:8787` for the Android emulator).
 
-> The app's Soshin/Jushin **logic** is fully unit-tested with `MockSensors` in
-> bun. The native modules (`modules/expo-shusseki-*`) are the only
+> The app's Soshin/Jushin **logic** is fully unit-tested with `MockSensors`
+> (Vitest). The native modules (`modules/expo-shusseki-*`) are the only
 > device-dependent code and need a real build to exercise.
 
 ## What is implemented vs. next

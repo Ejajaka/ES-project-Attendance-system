@@ -4,12 +4,12 @@
   "type": "module",
   "description": "Shusseki comparative evaluation scripts against manual ground truth.",
   "scripts": {
-    "test": "bun test",
-    "typecheck": "bunx tsc --noEmit",
-    "run:sample": "bun run src/run-sample.ts"
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "run:sample": "tsx src/run-sample.ts"
   },
   "dependencies": {
-    "shared": "workspace:*"
+    "shared": "*"
   },
   "devDependencies": {
     "@types/bun": "^1.1.0",

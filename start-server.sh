@@ -18,7 +18,7 @@ sleep 1
 cd "$DIR"
 : > "$LOG"
 echo "==> Starting server (logs: $LOG)"
-nohup bun run src/server.ts > "$LOG" 2>&1 &
+nohup npx tsx src/server.ts > "$LOG" 2>&1 &
 PID=$!
 
 # Wait briefly for the listener to come up, then report the URL.

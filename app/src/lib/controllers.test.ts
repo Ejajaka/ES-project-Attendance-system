@@ -1,4 +1,4 @@
-import { test, expect } from "bun:test";
+import { test, expect } from "vitest";
 import { generateTOTP, verifyTOTP, type DeviceReport } from "shared";
 import { SoshinController, type SoshinConfig } from "./modes/soshin";
 import { JushinController, type JushinConfig } from "./modes/jushin";

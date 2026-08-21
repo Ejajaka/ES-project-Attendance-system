@@ -2,33 +2,39 @@
 
 Priority order. See `session.md` for full context.
 
-## P0 — Verify the app actually renders (black-screen regression)
-The npm-rebuilt release APK **built but was never run on the emulator** to
-confirm the `globalThis.expo` crash is gone.
+## P0 — Verify the app actually renders (black-screen regression) — DONE ✅
+The npm-rebuilt release APK was built and **verified running on the emulator**:
+
+- AVD `shusseki` booted headless (API 35, x86_64; `sys.boot_completed=1`).
+- `adb install -r` of `app/android/.../app-release.apk` + `am start com.shusseki.app/.MainActivity`.
+- No `EventEmitter` / "has not been registered" errors; UI renders (`uiautomator`
+  dump shows "Shusseki", "RUN AS SOSHIN (ROOM)", "RUN AS JUSHIN (PHONE)").
+- Fixed along the way: `app/src/App.tsx` used `crypto.randomUUID()` at module
+  load, which Hermes doesn't provide on Android → "main has not been
+  registered". Now falls back to a pseudo-random id (no new dependency).
 
 ```bash
 export PATH=/opt/android-sdk/platform-tools:$PATH
-# ensure emulator (AVD "shusseki") is booted; if it won't boot headless, check
-# /dev/kvm and stale locks (~/.android/avd/*.lock), or try -gpu host
-adb install -r ./.tmp/shusseki-clean/android/app/build/outputs/apk/release/app-release.apk
+adb install -r app/android/app/build/outputs/apk/release/app-release.apk
 adb shell am start -n com.shusseki.app/.MainActivity
-adb logcat -d | grep ReactNativeJS   # expect NO "EventEmitter"/"has not been registered"
-adb exec-out screencap -p > .tmp/verified.png   # expect the Shusseki UI, not black
+adb logcat -d | grep ReactNativeJS   # expect "Running main", no crypto/registration errors
+adb exec-out screencap -p > verified.png
 ```
-If it renders: the pixel black screen is fixed. Flag it in the report.
 
-## P1 — Promote the npm build into the repo (finish "replace bun with npm")
-The working app lives in gitignored `.tmp/shusseki-clean`. Make it durable:
-1. Replace `app/` with the clean npm project's **source** (`src/`, `modules/`,
-   `package.json`, `app.json`, `metro.config.js`, `tsconfig.json`). Drop the
-   bun-only `app/metro.config.js` band-aid.
-2. Convert the repo to **npm workspaces**: replace `bun.lock` with
-   `package-lock.json`; `bun install` → `npm install`.
-3. Convert tests from `bun:test` to a Node runner (Vitest — `expect().toBe()`
-   is API-compatible) so no bun is needed: `shared/`, `server/`, `evaluation/`,
-   `app/src/lib/controllers.test.ts`.
-4. `shared` must stay a workspace/dir the app can import (`metro.config.js`
-   `watchFolders` for the shared root; `zod` must resolve for RN).
+## P1 — Promote the npm build into the repo (finish "replace bun with npm") — DONE ✅
+1. `app/` deps are now npm-installed; dropped the bun-only `.bun` scanning in
+   `app/metro.config.js` (clean npm-workspaces config with root `watchFolders`).
+2. Repository converted to **npm workspaces**: `package-lock.json` replaces
+   `bun.lock`; `npm install` replaces `bun install`; removed the stray
+   `"packageManager": "bun@1.3.14"` and the duplicate root `expo-*` deps (they
+   were pulling `expo@57`/`react-native@0.87` through `"expo": "*"` peers).
+3. Tests converted from `bun:test` to **Vitest** (`import { test, expect } from
+   "vitest"`) across `shared/`, `server/`, `evaluation/`, `app/src/lib` — all
+   65 pass. Server is `@hono/node-server` + `tsx` (no `Bun.serve`).
+4. `shared` remains importable by the app (hoisted workspace; `zod` resolves).
+
+Caches cleared to fit the emulator: `~/.bun/install`, `~/.gradle/caches`,
+`~/.npm` (all regenerable).
 
 ## P2 — The upcoming release-build recipe (for reference / CI)
 ```bash

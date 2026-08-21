@@ -48,7 +48,7 @@ kill_all
 echo "==> starting fusion server on :${SERVER_PORT} (log: $LOG)"
 cd "$SERVER_DIR"
 : > "$LOG"
-nohup bun run src/server.ts > "$LOG" 2>&1 &
+nohup npx tsx src/server.ts > "$LOG" 2>&1 &
 for _ in $(seq 1 20); do
   curl -sf -o /dev/null "http://localhost:${SERVER_PORT}/health" 2>/dev/null && break
   sleep 0.5
