@@ -42,7 +42,8 @@ npm-workspaces monorepo (see `docs/adr/0005-monorepo-structure.md`):
 ```
 /shared/      # Pure, framework-free logic: rolling code, per-modality confidence,
               #   fusion, evaluation metrics, Zod report schemas. Vitest-tested.
-/server/      # Hono fusion server (runs on Bun or Cloudflare Workers). Ingests
+/server/      # Hono fusion server (runs on Node via @hono/node-server, or
+              #   deploy the same `app` on Cloudflare Workers). Ingests
               #   reports, re-verifies rolling codes, computes presence + evaluates
               #   against manual ground truth.
 /app/         # Expo / React Native app with two modes (Soshin + Jushin) and the

@@ -1,27 +1,28 @@
 # Shusseki — installation & support (Arch Linux)
 
 Everything needed to build the Android app and run the emulator on **Arch
-Linux**. Written from a worked session on Arch `x86_64`; adjust paths/versions
+Linux**. Written from worked sessions on Arch `x86_64`; adjust paths/versions
 to taste. Other distros: see the "porting notes" at the end.
 
-> Short version: Node 20 + JDK 21 + Android SDK (API 35) + npm. The package
-> managers on Arch default to **Node 26 / JDK 25**, which **break the Expo
-> toolchain** — do not skip the Node/JDK pins.
+> Short version: Node (LTS-ish, 24 works for SDK 52) + npm + JDK 21 + Android
+> SDK (API 35). The project is an **npm workspaces** monorepo; text below that
+> says "bun" is stale unless it's in the troubleshooting section.
 
-## 1. Node 20 (Expo needs Node ≤ ~22; Node 26 fails)
+## 1. Node + package manager
 
-Arch's `nodejs` is the "Current" (bleeding) line. Install a controllable LTS
-with `n`:
+Use **npm** for this repo (bun was migrated away — see `session.md` /
+`todo.md` P1). Current verified set on this machine:
+Node **v24.18.1** + **npm 12**. That ran `expo prebuild`, Metro
+`export:embed`, and Gradle fine with Expo SDK 52.
+
+If a future SDK/toolchain chokes on bleeding-edge Node (an Arch `nodejs` bump
+has broken Expo before), pin a controllable version with `n`:
 
 ```bash
-npm install -g n          # npm ships with Node, so this works first
-sudo n 20                 # installs v20 to /usr/local/n and symlinks /usr/local/bin/node
-hash -r; node --version   # -> v20.x
+npm install -g n
+sudo n 20          # or whatever LTS the SDK wants; /usr/local/bin wins PATH
+hash -r; node --version
 ```
-
-`n` keeps the system Node 26 under `/usr/sbin` untouched; `/usr/local/bin`
-wins the PATH. (Alternative: `sudo pacman -S nodejs-lts-iron`, which conflicts
-with `nodejs` and replaces the default.)
 
 ## 2. JDK 21 (Gradle 8.10 / AGP need ≤ 21; JDK 25 is too new)
 
@@ -32,134 +33,178 @@ export PATH="$JAVA_HOME/bin:$PATH"     # export in ~/.zshrc too
 java -version                            # -> 21.x
 ```
 
-Full package set commonly needed: `jdk21-openjdk` (also implicitly gives
-`jre-openjdk-headless`). Do **not** point Gradle at `java-25-openjdk`.
+Do **not** point Gradle at `java-25-openjdk`.
 
-## 3. Android SDK (the new `android` CLI or manual)
-
-Choose a root dir, e.g. `/opt/android-sdk`:
+## 3. Android SDK (`sdkmanager` + `avdmanager`)
 
 ```bash
 sudo mkdir -p /opt/android-sdk
-# cmdline-tools first (the CLI that installs everything else):
-#   download commandlinetools-linux-*.zip from https://developer.android.com/studio#command-line-tools-only
-#   unzip to /opt/android-sdk/cmdline-tools/latest
+# cmdline-tools first: download commandlinetools-linux-*.zip from
+# https://developer.android.com/studio#command-line-tools-only
+# unzip to /opt/android-sdk/cmdline-tools/latest
+sudo chown -R "$USER":"$USER" /opt/android-sdk   # or installs fail
 export ANDROID_HOME=/opt/android-sdk ANDROID_SDK_ROOT=/opt/android-sdk
-export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
+export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
+
+yes | sdkmanager --licenses
+sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+sdkmanager "emulator" "system-images;android-35;google_apis;x86_64"
 ```
 
-**Fix ownership first** — the CLI writes a legacy XML into the SDK tree, and a
-root-owned dir causes `java.nio.file.AccessDeniedException`:
-
-```bash
-sudo chown -R "$USER":"$USER" /opt/android-sdk      # required, or installs fail
-```
-
-Then install the SDK packages with the new CLI:
-
-```bash
-android sdk install "platform-tools"
-android sdk install "platforms;android-35"          # compileSdk for the app
-android sdk install "build-tools;35.0.0"
-android sdk install "ndk;27.1.12297006"             # only if you build C++/codegen
-android sdk install "emulator"
-android sdk install "system-images;android-35;google_apis;x86_64"
-```
-
-Verify: `android sdk list` should show platform 35, build-tools, emulator.
-
-> New CLI crashes may leave a report in `~/.android/cli/analytics/crash_reports/`;
-> that's harmless.
+No NDK needed — the native modules (`app/modules/expo-shusseki-*`) are Kotlin
+only.
 
 ## 4. Create an AVD (emulator "device")
 
 ```bash
-echo no | /opt/android-sdk/cmdline-tools/latest/bin/avdmanager create avd \
+echo no | avdmanager create avd \
   -n shusseki -k "system-images;android-35;google_apis;x86_64" -d pixel_5 --force
 ```
 
-**KVM must work** for usable performance:
-
-```bash
-ls -l /dev/kvm      # should exist
-sudo pacman -S --needed qemu-desktop libvirt dnsmasq  # qemu brings /dev/kvm setup
-sudo usermod -aG kvm "$USER"   # add your user to the kvm group, then re-login
-```
+KVM must work for usable performance (`ls -l /dev/kvm`).
 
 ## 5. Run the emulator
 
 **Windowed (you want to see the screen):**
 
 ```bash
-export DISPLAY=${DISPLAY:-:0}     # X/XWayland
+export DISPLAY=${DISPLAY:-:0}     # X/XWayland; works from Hyprland too
 /opt/android-sdk/emulator/emulator -avd shusseki \
   -gpu swiftshader_indirect -no-audio -no-snapshot -no-metrics &
 ```
 
-**Headless (CI / no display):**
+**Headless (CI / no display):** same with `-no-window`.
 
-```bash
-/opt/android-sdk/emulator/emulator -avd shusseki \
-  -no-window -gpu swiftshader_indirect -no-audio -no-snapshot -no-metrics &
-```
-
-Wait for boot, then the app is driven via adb:
+Wait for boot, then drive via adb:
 
 ```bash
 adb wait-for-device
 adb shell getprop sys.boot_completed   # until it prints "1"
-adb install -r path/to/app-release.apk
+adb install -r app-release.apk
 adb shell am start -n com.shusseki.app/.MainActivity
 adb logcat -d | grep ReactNativeJS
 adb exec-out screencap -p > screen.png
 ```
 
-### If the emulator won't boot (headless under automation)
-- kill leftovers / stale locks:
-  `pkill -9 -f qemu-system; pkill -9 -f emulator; rm -f ~/.android/avd/*.lock`
-- confirm `/dev/kvm` permission; try `-gpu swiftshader_indirect` (software;
-  reliable) instead of `-gpu host`.
-- If the windowed Qt window throws `QXcbWindow … mapped window` errors on
-  Wayland, run the emulator from a real terminal on the graphical session
-  rather than a detached background job.
+## 6. Gradle
 
-## 6. Gradle (optional but reliable)
+Expo/RN's wrapper downloads Gradle itself; if the 10 s connect timeout gives up
+on a big/redirected download, seed it into
+`~/.gradle/wrapper/dists/gradle-8.10.2-all/<hash>/` with `curl -sL`.
 
-Expo/RN's Gradle wrapper downloads Gradle itself; the wrapper's 10 s connect
-timeout often fails on larger/redirected downloads:
+## 7. Build the APKs (npm toolchain)
 
 ```bash
-# seed the exact distribution the wrapper wants:
-curl -sL -o /tmp/gradle-8.10.2-all.zip https://services.gradle.org/distributions/gradle-8.10.2-all.zip
-# copy into the hash dir the wrapper created (~/.gradle/wrapper/dists/gradle-8.10.2-all/<hash>/)
-cp /tmp/gradle-8.10.2-all.zip ~/.gradle/wrapper/dists/gradle-8.10.2-all/*/gradle-8.10.2-all.zip
-```
-
-Proxies: Gradle wrapper connect failures usually show `SocketTimeoutException`
-or `Connect timed out` — see `curl -sIL` for reachability.
-
-## 7. Build the release APK
-
-```bash
-cd app            # the npm-based Expo project (see session.md / todo.md)
-npm install
-npx expo prebuild --platform android
+cd app
+npx expo prebuild --platform android      # generates app/android (gitignored)
+cd android
 export JAVA_HOME=/usr/lib/jvm/java-21-openjdk
 export PATH="$JAVA_HOME/bin:$PATH"
-cd android && ./gradlew assembleRelease
-ls app/build/outputs/apk/release/app-release.apk
+./gradlew assembleDebug                   # and/or assembleRelease
+ls app/build/outputs/apk/{debug,release}/
 ```
 
-Hazards seen on Arch:
-- **Node/Bun running the Expo CLI** → use Node 20 (`node_node_modules/expo/bin/cli …`).
-- **`expo-modules-core` version skew** → let **npm** resolve it (a bun-installed
-  project can float `expo-modules-core` to a version that mismatches Expo, which
-  crashes with `Cannot read property 'EventEmitter' of undefined`).
-- **Symlinked workspace `shared` dep not resolving in Metro** → add it to
-  `metro.config.js` `watchFolders` + `resolver.nodeModulesPaths`.
+Run `expo prebuild` again after changing `app.json`/native config; keep
+`app/react-native.config.js` (see troubleshooting) in the repo.
+
+---
+
+## Troubleshooting — issues that stopped us & their fixes (2026-08)
+
+All were hit and fixed while moving the repo to the npm toolchain and getting
+the app rendering on the emulator.
+
+### 1. npm doesn't accept `workspace:*` ("Unsupported URL Type")
+`npm install` fails with `EUNSUPPORTEDPROTOCOL workspace:*`. npm (unlike
+yarn/pnpm/bun) has no `workspace:` protocol. **Fix:** use `"shared": "*"` — npm
+links a package matching a workspace name regardless of range.
+
+### 2. npm hoisted `expo@57` / `react-native@0.87` over the app's SDK 52
+The root `package.json` duplicated `expo-asset`/`expo-constants`/etc. from the
+`app` workspace. Those declare `"expo": "*"` peers, and npm 12 auto-installs
+the **latest** peer at the root, producing two copies (52 in `app`, 57 at
+root). **Fix:** delete the duplicate `expo-*` deps from the root manifest (the
+`app` workspace already declares them). `npm ls expo react-native` should show
+a single `52.0.49` / `0.76.9`.
+
+### 3. Stale `package-lock.json` after manifest edits → "Invalid Version: "
+If you edit `package.json` between `npm install`s (or wipe `node_modules` but
+keep the lock), npm 12's arborist can crash with `TypeError: Invalid Version: `
+during dedupe. **Fix:** `rm -rf node_modules */node_modules package-lock.json`
+and reinstall fresh.
+
+### 4. `import expo.core.ExpoModulesPackage;` — cannot find symbol
+Generated `app/android/app/build/generated/autolinking/.../PackageList.java`
+imports `expo.core.ExpoModulesPackage`, but the class ships as
+`expo.modules.ExpoModulesPackage`, so `:app:compileDebugJavaWithJavac` fails.
+This is an upstream Expo SDK 52/53 autolinking bug
+(expo-modules-autolinking@2.0.8 `react-native-config` ignores the
+`packageImportPath` key and falls back to the module's `namespace "expo.core"`).
+**Fix (in repo):** `app/react-native.config.js` overrides the `expo` dep:
+```js
+module.exports = {
+  dependencies: {
+    expo: { platforms: { android: {
+      n: 'import expo.modules.ExpoModulesPackage;',
+      packageImportPath: 'import expo.modules.ExpoModulesPackage;',
+    } } },
+  },
+};
+```
+(`n` is read by expo's autolinker, `packageImportPath` by the community CLI —
+both produce the correct import.) **Do not** hand-add an
+`expo/core/ExpoModulesPackage.java` stub under `app/android/` — it's a
+gitignored generated dir and gets wiped by prebuild; the config override is the
+durable fix.
+
+### 5. Release app crashes: `ReferenceError: Property 'crypto' doesn't exist`
+`app/src/App.tsx` called `crypto.randomUUID()` at module load. Hermes
+(React Native 0.76) exposes no global `crypto`, so the bundle throws before
+`AppRegistry.registerComponent` runs → `"main" has not been registered`.
+**Fix (in repo):** a helper that uses `crypto.randomUUID()` when present and
+otherwise falls back to `Date.now()`/`Math.random()` (no new dependency).
+`shared/src/rollingCode.ts` already avoided `node:crypto`; watch for any other
+`crypto`/`Buffer` use in RN-bundled code.
+
+### 6. Emulator: `FATAL | Not enough space to create userdata partition`
+The emulator's disk check is fixed at **~7.4 GB** and **ignores** both
+`disk.dataPartition.size` in `~/.android/avd/shusseki.avd/config.ini` and the
+`-partition-size` flag. **Fix:** actually free disk (get `/` under ~90%). On
+this machine we cleared regenerable caches:
+`~/.bun/install` (6.5G), `~/.gradle/caches` (3.9G), `~/.npm`, the pacman cache
+(`yes | sudo pacman -Scc`, ~6.5G), plus removed the ghcup Haskell toolchain
+and 101 orphaned packages. Root went 94% → 83% and the emulator booted.
+
+### 7. Gradle: `Could not read workspace metadata .../metadata.bin`
+Deleting `~/.gradle/caches` while a Gradle daemon has them open corrupts the
+Kotlin accessor cache. **Fix:** `./gradlew --stop` first, then
+`rm -rf ~/.gradle/caches`, then rebuild (the first build re-downloads the deps,
+~2-4 GB).
+
+### 8. `pkill` kills your own shell when launching/stopping the emulator
+`pkill -f qemu-system` matches the *launching shell's* command line too (it
+contains that string), silently killing the command before the emulator starts.
+Use the exact process name or PID instead:
+`pkill -x qemu-system-x86_64-headless` (headless) — killing by PID is safest.
+Windowed builds run as `qemu-system-x86_64`.
+
+### 9. Kotlin-only modules — remember ABI choices
+The four `app/modules/expo-shusseki-*` are Kotlin/Swift; no `cpp/` → no NDK.
+
+---
+
+## Remaining knit-picks (fix when convenient, non-blocking)
+- `npm run lint` fails today: there is no `biome.json`, and `biome check .`
+  walks the gitignored `app/android/` build artifacts. Fix: add a
+  `biome.json` that excludes `app/android/**` (and ideally `.expo/`).
+- The only bun residue in manifests is `@types/bun` + `"types": ["react",
+  "bun"]` in `app/tsconfig.json`. Fully -purge by dropping `"bun"` from types
+  and removing `@types/bun` devDeps.
+- `AGENTS.md` at the repo root is still the bun-era setup script (it only
+  affects *this* checkout's env setup; harmless to leave).
 
 ## Porting notes (non-Arch)
-- **Debian/Ubuntu:** `apt install openjdk-21-jdk-headless`; Node via `n`;
-  KVM: `apt install qemu-kvm libvirt-daemon-system`.
+- **Debian/Ubuntu:** `apt install openjdk-21-jdk-headless`; KVM:
+  `apt install qemu-kvm libvirt-daemon-system`.
 - **Fedora:** `dnf install java-21-openjdk-devel`; KVM: `dnf install qemu-kvm`.
 - Android SDK / AVD / Gradle / npm steps above are distro-agnostic.
