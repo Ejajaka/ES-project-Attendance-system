@@ -1,0 +1,51 @@
+{
+  "expo": {
+    "name": "Shusseki",
+    "slug": "shusseki",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "shusseki",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "autolinking": {
+      "nativeModulesDir": "./modules"
+    },
+    "ios": {
+      "bundleIdentifier": "com.shusseki.app",
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSBluetoothAlwaysUsageDescription": "Shusseki uses Bluetooth to sense room presence.",
+        "NSBluetoothPeripheralUsageDescription": "Shusseki uses Bluetooth to sense room presence.",
+        "NSLocationWhenInUseUsageDescription": "WiFi RSSI requires location to estimate room presence.",
+        "NSMicrophoneUsageDescription": "Shusseki listens for an ultrasonic presence tone.",
+        "NSFaceIDUsageDescription": "Shusseki verifies the device owner at attendance boundaries."
+      }
+    },
+    "android": {
+      "package": "com.shusseki.app",
+      "permissions": [
+        "android.permission.BLUETOOTH_SCAN",
+        "android.permission.BLUETOOTH_ADVERTISE",
+        "android.permission.BLUETOOTH_CONNECT",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.NEARBY_WIFI_DEVICES",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.CHANGE_WIFI_STATE",
+        "android.permission.ACCESS_WIFI_STATE",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MICROPHONE",
+        "android.permission.POST_NOTIFICATIONS"
+      ]
+    },
+    "plugins": [
+      "./modules/expo-shusseki-ble/app.plugin.js",
+      "./modules/expo-shusseki-wifi/app.plugin.js",
+      "./modules/expo-shusseki-ultrasonic/app.plugin.js",
+      "./modules/expo-shusseki-biometric/app.plugin.js"
+    ]
+  }
+}

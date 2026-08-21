@@ -35,14 +35,73 @@ against the manually counted ground truth, in a controlled environment, to deter
 
 Early-stage research project. See `PLAN.md` for the working plan, open questions, and next steps.
 
-## Repository Structure (proposed)
+## Repository Structure
+
+Bun-workspaces monorepo (see `docs/adr/0005-monorepo-structure.md`):
 
 ```
-/node-firmware/       # Code running on the fixed IoT nodes (BLE scan, WiFi RSSI capture, ultrasonic emit/receive)
-/android-app/         # Android app: BLE/WiFi/ultrasonic signal emission, biometric check, server reporting
-/server/              # Central server: data ingestion, per-signal and fused classification logic
-/evaluation/          # Scripts and logs for comparing outputs against manual headcount ground truth
-/docs/                # Design notes, test protocols, results
-PLAN.md
+/shared/      # Pure, framework-free logic: rolling code, per-modality confidence,
+              #   fusion, evaluation metrics, Zod report schemas. TDD-tested in bun.
+/server/      # Hono fusion server (runs on Bun or Cloudflare Workers). Ingests
+              #   reports, re-verifies rolling codes, computes presence + evaluates
+              #   against manual ground truth.
+/app/         # Expo / React Native app with two modes (Soshin + Jushin) and the
+              #   native modules (BLE, WiFi, ultrasonic, biometric) under modules/.
+/evaluation/  # Comparative-study runner + scripts (BLE vs WiFi vs Ultrasonic vs Fused).
+/docs/        # ADRs (docs/adr) and the test protocol (docs/test-protocol.md).
+PLAN.md       # Working plan, open questions, order of operations.
 README.md
 ```
+
+## Quick start
+
+Prerequisites: `bun` (>=1.3) and, for the app, the Expo toolchain + a device
+or emulator (the native modules require Android SDK / Xcode to build).
+
+```bash
+# install everything (bun workspaces)
+bun install
+
+# run all tests (64, across shared/server/evaluation/app logic)
+bun test
+
+# start the fusion server
+cd server && bun run dev          # http://localhost:8787
+
+# run the comparative evaluation demo
+cd evaluation && bun run run:sample
+```
+
+### Server API
+- `POST /api/sessions` — create a session (shares the rolling-code secret).
+- `POST /api/reports` — ingest a Soshin/Jushin `DeviceReport`.
+- `GET  /api/sessions/:id/presence` — latest per-device presence.
+- `POST /api/sessions/:id/ground-truth` — record a manual headcount.
+- `GET  /api/sessions/:id/evaluate` — room-level count error + per-modality metrics.
+
+### App
+```bash
+cd app
+bunx expo start          # then run on Android/iOS
+```
+Pick **Soshin** (room-side: broadcasts the ultrasonic code + BLE beacon) or
+**Jushin** (phone-side: connects to the Soshin WiFi, listens for the code,
+reports BLE/WiFi). Set `EXPO_PUBLIC_SERVER_URL` to point at the fusion server
+(default `http://10.0.2.2:8787` for the Android emulator).
+
+> The app's Soshin/Jushin **logic** is fully unit-tested with `MockSensors` in
+> bun. The native modules (`modules/expo-shusseki-*`) are the only
+> device-dependent code and need a real build to exercise.
+
+## What is implemented vs. next
+
+**Done:** rolling-code TOTP + server re-verification, per-modality confidence,
+fusion (noisy-or / average / weighted), evaluation metrics, the fusion server
+with the full ingest→presence→evaluate pipeline, the two-mode Expo app with a
+clean sensor seam, native-module scaffolds (BLE/WiFi/ultrasonic/biometric), and
+the comparative evaluation runner.
+
+**Next (PLAN §5):** spikes on `LocalOnlyHotspot` lifecycle, background-mic
+reliability, and cross-OEM WiFi RSSI; lock the BLE combining rule + sample size;
+run controlled positive/negative data-collection sessions per
+`docs/test-protocol.md`.

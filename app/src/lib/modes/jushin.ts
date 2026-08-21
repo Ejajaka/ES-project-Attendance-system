@@ -1,0 +1,70 @@
+import type { DeviceReport, BiometricCheck } from "shared";
+import type { DeviceSensors } from "../sensors";
+import type { Reporter } from "../reporter";
+
+/**
+ * Jushin (phone-side) controller. Connects to the Soshin WiFi, listens only for
+ * the ultrasonic rolling code, reports BLE + WiFi signal, and performs an
+ * on-device biometric check at attendance boundaries.
+ */
+export interface JushinConfig {
+  deviceId: string;
+  roomId: string;
+  sessionId: string;
+  soshinSsid: string;
+}
+
+export class JushinController {
+  private startBio: BiometricCheck | null = null;
+  private endBio: BiometricCheck | null = null;
+
+  constructor(
+    private sensors: DeviceSensors,
+    private config: JushinConfig,
+    private reporter: Reporter,
+  ) {}
+
+  /** Biometric at start of attendance, then join the room network + start sensing. */
+  async startAttendance(): Promise<BiometricCheck> {
+    this.startBio = await this.sensors.biometric.perform("fingerprint");
+    await this.sensors.wifi.joinSoshin(this.config.soshinSsid);
+    await this.sensors.ble.start("jushin", {
+      roomId: this.config.roomId,
+      nodeId: this.config.deviceId,
+    });
+    await this.sensors.ultrasonic.startListener();
+    return this.startBio;
+  }
+
+  /** One sensing cycle: gather all modalities and report to the server. */
+  async tick(now: number): Promise<DeviceReport> {
+    const [ble, wifi, ultrasonic] = await Promise.all([
+      this.sensors.ble.observe(),
+      this.sensors.wifi.observe(),
+      this.sensors.ultrasonic.listen(),
+    ]);
+
+    const report: DeviceReport = {
+      deviceId: this.config.deviceId,
+      mode: "jushin",
+      roomId: this.config.roomId,
+      sessionId: this.config.sessionId,
+      timestamp: now,
+      ble,
+      wifi,
+      ultrasonic,
+      biometric: this.startBio ?? undefined,
+    };
+
+    await this.reporter.send(report);
+    return report;
+  }
+
+  /** Biometric at end of attendance, then stop sensing. */
+  async endAttendance(): Promise<BiometricCheck> {
+    this.endBio = await this.sensors.biometric.perform("face");
+    await this.sensors.ble.stop();
+    await this.sensors.ultrasonic.stopListener();
+    return this.endBio;
+  }
+}

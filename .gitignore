@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+.expo/
+dist/
+*.tsbuildinfo
+
+# Native (Expo generates these via `expo prebuild`; commit only truly custom changes)
+/app/android/
+/app/ios/
+*.keystore
+google-services.json
+
+# Gradle build output inside the native modules
+/app/modules/*/android/build/
+/app/modules/*/ios/build/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+*.pem
+
+# Logs & OS
+npm-debug.log*
+.DS_Store
+*.log
+
+# Data collected during experiments
+/evaluation/runs/
+*.csv.tmp
+
+# Editor
+.vscode/
+.idea/

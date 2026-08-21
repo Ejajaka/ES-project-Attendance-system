@@ -1,0 +1,9 @@
+{
+  "platforms": ["android", "ios"],
+  "apple": {
+    "modules": ["ShussekiBiometric"]
+  },
+  "android": {
+    "modules": ["expo.modules.shussekiBiometric.ShussekiBiometricModule"]
+  }
+}

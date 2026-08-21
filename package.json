@@ -1,0 +1,30 @@
+{
+  "name": "shusseki",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Shusseki — room-level continuous attendance via BLE + WiFi + ultrasonic fusion",
+  "workspaces": [
+    "shared",
+    "server",
+    "app",
+    "evaluation"
+  ],
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "bunx tsc -b",
+    "dev:server": "bun --cwd server run dev",
+    "lint": "bunx biome check ."
+  },
+  "devDependencies": {
+    "@types/bun": "^1.1.0",
+    "typescript": "^5.6.3"
+  },
+  "dependencies": {
+    "expo-asset": "~11.0.5",
+    "expo-constants": "~17.0.8",
+    "expo-file-system": "~18.0.12",
+    "expo-font": "~13.0.4",
+    "expo-keep-awake": "~14.0.3"
+  },
+  "packageManager": "bun@1.3.14"
+}

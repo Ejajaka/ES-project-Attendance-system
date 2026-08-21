@@ -1,0 +1,9 @@
+{
+  "platforms": ["android", "ios"],
+  "apple": {
+    "modules": ["ShussekiBle"]
+  },
+  "android": {
+    "modules": ["expo.modules.shussekible.ShussekiBleModule"]
+  }
+}

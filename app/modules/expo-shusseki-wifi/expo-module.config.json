@@ -1,0 +1,9 @@
+{
+  "platforms": ["android", "ios"],
+  "apple": {
+    "modules": ["ShussekiWifi"]
+  },
+  "android": {
+    "modules": ["expo.modules.shussekiwifi.ShussekiWifiModule"]
+  }
+}

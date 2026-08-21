@@ -1,0 +1,9 @@
+{
+  "platforms": ["android", "ios"],
+  "apple": {
+    "modules": ["ShussekiUltrasonic"]
+  },
+  "android": {
+    "modules": ["expo.modules.shussekiultrasonic.ShussekiUltrasonicModule"]
+  }
+}
