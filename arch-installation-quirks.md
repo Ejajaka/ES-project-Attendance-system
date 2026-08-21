@@ -197,11 +197,12 @@ The four `app/modules/expo-shusseki-*` are Kotlin/Swift; no `cpp/` → no NDK.
 - `npm run lint` fails today: there is no `biome.json`, and `biome check .`
   walks the gitignored `app/android/` build artifacts. Fix: add a
   `biome.json` that excludes `app/android/**` (and ideally `.expo/`).
-- The only bun residue in manifests is `@types/bun` + `"types": ["react",
-  "bun"]` in `app/tsconfig.json`. Fully -purge by dropping `"bun"` from types
-  and removing `@types/bun` devDeps.
-- `AGENTS.md` at the repo root is still the bun-era setup script (it only
-  affects *this* checkout's env setup; harmless to leave).
+
+Historical bun references remain in `todo.md`, `docs/adr/0005`'s update
+addendum, and the Troubleshooting section above — those are records of the
+migration, not current requirements. The toolchain itself (manifests,
+tsconfig, scripts, `AGENTS.md`) has been bun-free since 2026-08
+(`@types/bun` and the `"bun"` tsconfig entry are gone).
 
 ## Porting notes (non-Arch)
 - **Debian/Ubuntu:** `apt install openjdk-21-jdk-headless`; KVM:

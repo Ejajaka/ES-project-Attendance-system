@@ -9,8 +9,8 @@ import type { DeviceSensors, BleAdapter, WifiAdapter, UltrasonicAdapter, Biometr
 
 /**
  * In-memory sensor stand-in. Tests set the public fields; the real app swaps in
- * native-module-backed adapters. Lets the full Soshin/Jushin logic run in bun
- * (and on Expo web) without a device.
+ * native-module-backed adapters. Lets the full Soshin/Jushin logic run without
+ * a device (and on Expo web).
  */
 export class MockSensors implements DeviceSensors {
   bleReadings: BleNodeReading[] = [];

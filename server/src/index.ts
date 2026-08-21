@@ -13,7 +13,7 @@ import { SessionRegistry, type CreateSessionInput } from "./sessions";
 /**
  * Shusseki fusion server. Ingests Soshin/Jushin reports, computes per-modality
  * + fused presence, and evaluates against manual ground truth. Deployable on
- * Bun (`bun run src/index.ts`) or Cloudflare Workers (Hono is runtime-agnostic).
+ * Node (`tsx src/server.ts`) or Cloudflare Workers (Hono is runtime-agnostic).
  */
 
 export function createApp(store: Store, sessions: SessionRegistry): Hono {

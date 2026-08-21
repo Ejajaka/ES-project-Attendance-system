@@ -3,7 +3,7 @@
 # background. Usage: ./start-server.sh [port]
 set -e
 
-# Pick up toolchain paths (e.g. bun, android) from the user's shell config.
+# Pick up toolchain paths (e.g. android, java) from the user's shell config.
 source ~/.zshrc 2>/dev/null || true
 
 PORT="${1:-8787}"

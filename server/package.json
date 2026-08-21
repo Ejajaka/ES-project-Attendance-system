@@ -2,7 +2,7 @@
   "name": "server",
   "version": "0.1.0",
   "type": "module",
-  "description": "Shusseki ingestion + fusion server (deployable on Bun or Cloudflare Workers).",
+  "description": "Shusseki ingestion + fusion server (deployable on Node via @hono/node-server, or Cloudflare Workers).",
   "main": "src/index.ts",
   "scripts": {
     "dev": "tsx watch src/server.ts",
@@ -16,7 +16,6 @@
     "hono": "^4.6.0"
   },
   "devDependencies": {
-    "@types/bun": "^1.1.0",
     "typescript": "^5.6.3"
   }
 }

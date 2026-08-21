@@ -7,7 +7,7 @@
 #
 set -euo pipefail
 
-# Toolchain paths (bun, node 20, etc.)
+# Toolchain paths (node, android, etc.)
 source "$HOME/.zshrc" 2>/dev/null || true
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -17,7 +17,8 @@ SERVER_PORT="${SERVER_PORT:-8787}"
 EXPO_PORT="${EXPO_PORT:-8081}"
 LOG="$SERVER_DIR/server.log"
 
-# Expo must run on Node 20 (Node 26 breaks its TS loading; Bun can't parse RN).
+# Expo historically breaks on Arch's bleeding-edge nodejs; pin an LTS via `n`
+# if the CLI ever fails. Node 24.18.1 + npm are verified against SDK 52.
 NODE_BIN="$(command -v node || true)"
 if [ -z "$NODE_BIN" ] || ! "$NODE_BIN" --version 2>/dev/null | grep -q "^v20\."; then
   if [ -x /usr/local/bin/node ]; then NODE_BIN=/usr/local/bin/node; fi
