@@ -1,6 +1,7 @@
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   Button,
+  Linking,
   SafeAreaView,
   ScrollView,
   StatusBar,
@@ -15,10 +16,10 @@ import { NativeSensors } from "./lib/nativeSensors";
 import { HttpReporter } from "./lib/reporter";
 import { SoshinController, type SoshinConfig } from "./lib/modes/soshin";
 import { JushinController, type JushinConfig } from "./lib/modes/jushin";
-
-const SERVER_URL =
-  (process.env.EXPO_PUBLIC_SERVER_URL as string | undefined) ??
-  "http://10.0.2.2:8787";
+import { SERVER_URL, DEFAULT_SETTINGS, type Settings } from "./settings";
+import SmokeScreen from "./SmokeScreen";
+import E2eScreen from "./E2eScreen";
+import type { E2eRole } from "./lib/modes/e2e";
 
 // Stable-enough device id for the prototype (resets on reinstall).
 // Prefers crypto.randomUUID() when the runtime exposes it, but falls back to a
@@ -35,26 +36,49 @@ function randomIdPrefix(): string {
 
 const DEVICE_ID = `phone-${randomIdPrefix()}`;
 
-type Mode = "none" | "soshin" | "jushin";
+type Mode = "none" | "soshin" | "jushin" | "smoke" | "e2e";
 
-interface Settings {
-  roomId: string;
-  sessionId: string;
-  soshinSsid: string;
-  secret: string; // shared rolling-code secret (Soshin side + server session)
+/** Deep-linking target parsed from `shusseki://<path>?<query>`. */
+type Launch =
+  | { screen: "smoke"; autoRun?: string }
+  | { screen: "e2e"; role: E2eRole };
+
+function parseLaunch(url: string | null): Launch | null {
+  if (!url || !url.startsWith("shusseki://")) return null;
+  const rest = url.slice("shusseki://".length);
+  const [path, query] = rest.split("?");
+  const params: Record<string, string> = {};
+  for (const kv of (query ?? "").split("&")) {
+    const [k, v] = kv.split("=");
+    if (k) params[k] = decodeURIComponent(v ?? "");
+  }
+  if (path === "smoke") return { screen: "smoke", autoRun: params["run"] };
+  if (path === "e2e") {
+    const role = (params["role"] ?? "both") as E2eRole;
+    return { screen: "e2e", role };
+  }
+  return null;
 }
-
-const DEFAULT_SETTINGS: Settings = {
-  roomId: "room-1",
-  sessionId: "sess-1",
-  soshinSsid: "Shusseki-1",
-  secret: "change-me-shared-secret",
-};
 
 export default function App() {
   const scheme = useColorScheme();
   const [mode, setMode] = useState<Mode>("none");
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
+  const [launch, setLaunch] = useState<Launch | null>(null);
+
+  // Remote/hardware hook: `shusseki://smoke?run=all` or `shusseki://e2e?role=…`
+  // boots straight into the automated suite; results stream to logcat.
+  useEffect(() => {
+    const onUrl = (url: string | null) => {
+      const l = parseLaunch(url);
+      if (!l) return;
+      setLaunch(l);
+      setMode(l.screen);
+    };
+    Linking.getInitialURL().then(onUrl);
+    const sub = Linking.addEventListener("url", (e) => onUrl(e.url));
+    return () => sub.remove();
+  }, []);
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -68,10 +92,18 @@ export default function App() {
           <View style={styles.row}>
             <Button title="Run as Soshin (room)" onPress={() => setMode("soshin")} />
             <Button title="Run as Jushin (phone)" onPress={() => setMode("jushin")} />
+            <Button title="Smoke tests" onPress={() => setMode("smoke")} />
+            <Button
+              title="E2E test (both)"
+              onPress={() => {
+                setLaunch({ screen: "e2e", role: "both" });
+                setMode("e2e");
+              }}
+            />
           </View>
         )}
 
-        {mode !== "none" && (
+        {mode !== "none" && mode !== "smoke" && (
           <SettingsForm settings={settings} onChange={setSettings} />
         )}
 
@@ -80,6 +112,28 @@ export default function App() {
         )}
         {mode === "jushin" && (
           <JushinScreen settings={settings} onExit={() => setMode("none")} />
+        )}
+        {mode === "smoke" && (
+          <SmokeScreen
+            settings={settings}
+            serverUrl={SERVER_URL}
+            autoRun={launch?.screen === "smoke" ? launch.autoRun : undefined}
+            onExit={() => {
+              setMode("none");
+              setLaunch(null);
+            }}
+          />
+        )}
+        {mode === "e2e" && (
+          <E2eScreen
+            settings={settings}
+            serverUrl={SERVER_URL}
+            role={launch?.screen === "e2e" ? launch.role : "both"}
+            onExit={() => {
+              setMode("none");
+              setLaunch(null);
+            }}
+          />
         )}
       </ScrollView>
     </SafeAreaView>
@@ -109,6 +163,12 @@ function SettingsForm({
         label="Soshin SSID"
         value={settings.soshinSsid}
         onChange={(v) => onChange({ ...settings, soshinSsid: v })}
+      />
+      <Field
+        label="Soshin hotspot password"
+        value={settings.soshinPass ?? ""}
+        onChange={(v) => onChange({ ...settings, soshinPass: v })}
+        secure
       />
       <Field
         label="Shared secret"
@@ -158,6 +218,7 @@ function SoshinScreen({
 }) {
   const [running, setRunning] = useState(false);
   const [code, setCode] = useState<string | null>(null);
+  const [hotspot, setHotspot] = useState<string | null>(null);
   const controllerRef = useRef<SoshinController | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -172,9 +233,10 @@ function SoshinScreen({
       step: 30,
     };
     const controller = new SoshinController(sensors, config);
-    await controller.start();
+    const h = await controller.start();
     controllerRef.current = controller;
     setRunning(true);
+    if (h) setHotspot(`"${h.ssid}" pass "${h.passphrase}"`);
 
     const loop = async () => {
       const c = await controller.broadcast(Date.now());
@@ -184,19 +246,30 @@ function SoshinScreen({
     intervalRef.current = setInterval(loop, 30_000);
   };
 
-  const stop = () => {
+  const stop = async () => {
     if (intervalRef.current) clearInterval(intervalRef.current);
     intervalRef.current = null;
+    if (controllerRef.current) {
+      try {
+        await controllerRef.current.stop(); // hotspot + BLE beacon teardown
+      } catch (e) {
+        console.warn("[soshin] stop failed:", e);
+      }
+    }
+    controllerRef.current = null;
     setRunning(false);
     setCode(null);
+    setHotspot(null);
   };
 
   return (
     <View style={styles.card}>
       <Text style={styles.modeTitle}>Soshin — room-side</Text>
       <Text style={styles.body}>
-        Broadcasts an ultrasonic rolling code and advertises a BLE beacon.
+        Hosts a local WiFi hotspot, advertises a BLE beacon, and broadcasts the
+        ultrasonic rolling code.
       </Text>
+      {hotspot && <Text style={styles.code}>Hotspot: {hotspot}</Text>}
       <Text style={styles.code}>Current code: {code ?? "—"}</Text>
       <View style={styles.row}>
         {!running ? (
@@ -231,10 +304,11 @@ function JushinScreen({
       roomId: settings.roomId,
       sessionId: settings.sessionId,
       soshinSsid: settings.soshinSsid,
+      soshinPass: settings.soshinPass || undefined,
     };
     const controller = new JushinController(sensors, config, reporter);
     const b = await controller.startAttendance();
-    setBio(`${b.kind} (${b.success ? "ok" : "failed"})`);
+    setBio(`${b.kind} (${b.success ? "ok" : `failed: ${b.reason ?? "unknown"}`})`);
     controllerRef.current = controller;
     setRunning(true);
 

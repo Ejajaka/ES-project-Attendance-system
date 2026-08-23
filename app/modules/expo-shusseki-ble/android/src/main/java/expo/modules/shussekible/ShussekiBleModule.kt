@@ -1,5 +1,6 @@
 package expo.modules.shussekible
 
+import android.Manifest
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.AdvertiseCallback
@@ -11,17 +12,21 @@ import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
+import android.content.Intent
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import expo.modules.interfaces.permissions.Permissions
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import expo.modules.kotlin.Promise
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /**
  * Soshin advertises a room beacon; Jushin scans for node readings.
- * Requires BLUETOOTH_ADVERTISE / BLUETOOTH_SCAN and location permissions
- * (declared in app.json). Build + behavior must be verified on a device.
+ * Requires BLUETOOTH_ADVERTISE / BLUETOOTH_SCAN / BLUETOOTH_CONNECT runtime
+ * permissions (API 31+); requestPermissionsAsync prompts for them.
  */
 class ShussekiBleModule : Module() {
   private val context: Context
@@ -40,6 +45,44 @@ class ShussekiBleModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("ShussekiBle")
 
+    AsyncFunction("requestPermissionsAsync") { promise: Promise ->
+      // BLUETOOTH_SCAN/ADVERTISE/CONNECT are runtime permissions only on
+      // API 31+; on older devices BLE needs only location + the legacy
+      // BLUETOOTH/BLUETOOTH_ADMIN normal permissions (declared in manifest).
+      val requested = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        arrayOf(
+          Manifest.permission.BLUETOOTH_SCAN,
+          Manifest.permission.BLUETOOTH_ADVERTISE,
+          Manifest.permission.BLUETOOTH_CONNECT,
+          Manifest.permission.ACCESS_FINE_LOCATION,
+        )
+      } else {
+        arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+      }
+      Permissions.askForPermissionsWithPermissionsManager(
+        appContext.permissions,
+        promise,
+        *requested,
+      )
+    }
+
+    AsyncFunction("getPermissionsAsync") { promise: Promise ->
+      val requested = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        arrayOf(
+          Manifest.permission.BLUETOOTH_SCAN,
+          Manifest.permission.BLUETOOTH_ADVERTISE,
+          Manifest.permission.BLUETOOTH_CONNECT,
+        )
+      } else {
+        arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+      }
+      Permissions.getPermissionsWithPermissionsManager(
+        appContext.permissions,
+        promise,
+        *requested,
+      )
+    }
+
     AsyncFunction("advertise") { roomId: String, nodeId: String ->
       startAdvertising(roomId, nodeId)
     }
@@ -51,6 +94,39 @@ class ShussekiBleModule : Module() {
     AsyncFunction("scanOnce") { timeoutMs: Double ->
       scanOnce(timeoutMs.toLong())
     }
+
+    AsyncFunction("getState") {
+      mapOf(
+        "enabled" to (bluetoothAdapter?.isEnabled ?: false),
+        "adapterAvailable" to (bluetoothAdapter != null),
+      )
+    }
+
+    /** Best-effort power-on: turns BT on, or prompts the user if consent is needed. */
+    AsyncFunction("ensureEnabled") {
+      ensureEnabled()
+    }
+  }
+
+  private fun ensureEnabled(): Boolean {
+    val adapter = bluetoothAdapter ?: return false
+    if (adapter.isEnabled) return true
+    val ok = try {
+      adapter.enable()
+    } catch (e: Exception) {
+      false
+    }
+    if (!ok) {
+      // Ask the user via the system Bluetooth enable dialog.
+      try {
+        val ctx = appContext.currentActivity
+        if (ctx != null) {
+          val i = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
+          if (i.resolveActivity(ctx.packageManager) != null) ctx.startActivity(i)
+        }
+      } catch (_: Exception) {}
+    }
+    return adapter.isEnabled
   }
 
   private fun startAdvertising(roomId: String, nodeId: String) {
@@ -111,9 +187,16 @@ class ShussekiBleModule : Module() {
   }
 
   private fun toReadings(): List<Map<String, Any>> {
-    return scanResults.map { r ->
+    return scanResults.mapNotNull { r ->
+      val rec = r.scanRecord ?: return@mapNotNull null
+      // Only Shusseki Soshins advertise under manufacturer id 0xABCD, with
+      // payload "roomId|nodeId" — lets Jushin identify its peer among neighbors.
+      val mfg = rec.getManufacturerSpecificData(0xABCD) ?: return@mapNotNull null
+      val payload = String(mfg, Charsets.UTF_8)
+      val nodeId = payload.substringAfter('|', payload)
+      if (nodeId.isBlank()) return@mapNotNull null
       mapOf(
-        "nodeId" to (r.device.address ?: "unknown"),
+        "nodeId" to nodeId,
         "rssi" to r.rssi,
       )
     }

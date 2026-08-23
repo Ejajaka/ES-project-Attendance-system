@@ -4,6 +4,8 @@ export interface NativeBiometricResult {
   performedAt: number;
   kind: "fingerprint" | "face";
   success: boolean;
+  /** Why it failed/was skipped; null/absent on success. */
+  reason?: string | null;
 }
 
 const NativeBio = requireNativeModule("ShussekiBiometric");

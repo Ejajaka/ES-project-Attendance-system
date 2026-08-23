@@ -12,6 +12,8 @@ export interface JushinConfig {
   roomId: string;
   sessionId: string;
   soshinSsid: string;
+  /** WPA passphrase of the Soshin hotspot (local-only hotspots are WPA2). */
+  soshinPass?: string;
 }
 
 export class JushinController {
@@ -27,7 +29,7 @@ export class JushinController {
   /** Biometric at start of attendance, then join the room network + start sensing. */
   async startAttendance(): Promise<BiometricCheck> {
     this.startBio = await this.sensors.biometric.perform("fingerprint");
-    await this.sensors.wifi.joinSoshin(this.config.soshinSsid);
+    await this.sensors.wifi.joinSoshin(this.config.soshinSsid, this.config.soshinPass);
     await this.sensors.ble.start("jushin", {
       roomId: this.config.roomId,
       nodeId: this.config.deviceId,

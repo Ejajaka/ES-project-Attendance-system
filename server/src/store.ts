@@ -1,5 +1,15 @@
 import type { DeviceReport, GroundTruth } from "shared";
 
+/** One self-reported step from an automated E2E test run. */
+export interface E2eEvent {
+  sessionId: string;
+  deviceId: string;
+  role: "soshin" | "jushin";
+  phase: string;
+  at: number;
+  detail?: Record<string, unknown>;
+}
+
 /** Append-only storage for ingested reports + ground truth. */
 export interface Store {
   addReport(report: DeviceReport): void;
@@ -7,11 +17,15 @@ export interface Store {
   latestPerDevice(sessionId: string): Map<string, DeviceReport>;
   addGroundTruth(gt: GroundTruth): void;
   groundTruthForSession(sessionId: string): GroundTruth[];
+  /** Upsert the latest E2E event per (session, device, phase). */
+  e2eUpsert(event: E2eEvent): void;
+  e2eForSession(sessionId: string): E2eEvent[];
 }
 
 export class MemoryStore implements Store {
   private reports: DeviceReport[] = [];
   private groundTruths: GroundTruth[] = [];
+  private e2eLog: E2eEvent[] = [];
 
   addReport(report: DeviceReport): void {
     this.reports.push(report);
@@ -39,5 +53,20 @@ export class MemoryStore implements Store {
 
   groundTruthForSession(sessionId: string): GroundTruth[] {
     return this.groundTruths.filter((g) => g.sessionId === sessionId);
+  }
+
+  e2eUpsert(event: E2eEvent): void {
+    const i = this.e2eLog.findIndex(
+      (e) =>
+        e.sessionId === event.sessionId &&
+        e.deviceId === event.deviceId &&
+        e.phase === event.phase,
+    );
+    if (i >= 0) this.e2eLog[i] = event;
+    else this.e2eLog.push(event);
+  }
+
+  e2eForSession(sessionId: string): E2eEvent[] {
+    return this.e2eLog.filter((e) => e.sessionId === sessionId);
   }
 }

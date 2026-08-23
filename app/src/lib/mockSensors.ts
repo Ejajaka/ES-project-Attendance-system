@@ -23,6 +23,9 @@ export class MockSensors implements DeviceSensors {
   };
   transmittedCodes: string[] = [];
   started = { ble: false, ultrasonic: false };
+  permissionsRequested = { ble: false, wifi: false, ultrasonic: false };
+  hotspot: { ssid: string; passphrase: string } | null = null;
+  lastJoin: { ssid: string; passphrase?: string } | null = null;
 
   ble: BleAdapter = {
     start: async () => {
@@ -30,13 +33,29 @@ export class MockSensors implements DeviceSensors {
     },
     stop: async () => {},
     observe: async (): Promise<BleObservation> => ({ readings: this.bleReadings }),
+    requestPermissions: async () => {
+      this.permissionsRequested.ble = true;
+      return true;
+    },
   };
 
   wifi: WifiAdapter = {
-    joinSoshin: async () => {
+    joinSoshin: async (ssid: string, passphrase?: string) => {
+      this.lastJoin = { ssid, passphrase };
       this.wifiState = { ...this.wifiState, connectedToSoshin: true };
     },
     observe: async (): Promise<WifiObservation> => this.wifiState,
+    requestPermissions: async () => {
+      this.permissionsRequested.wifi = true;
+      return true;
+    },
+    startHotspot: async () => {
+      this.hotspot = { ssid: "ShussekiMock", passphrase: "mock-passphrase" };
+      return this.hotspot;
+    },
+    stopHotspot: async () => {
+      this.hotspot = null;
+    },
   };
 
   ultrasonic: UltrasonicAdapter = {
@@ -48,6 +67,10 @@ export class MockSensors implements DeviceSensors {
       this.started.ultrasonic = true;
     },
     stopListener: async () => {},
+    requestPermissions: async () => {
+      this.permissionsRequested.ultrasonic = true;
+      return true;
+    },
   };
 
   biometric: BiometricAdapter = {

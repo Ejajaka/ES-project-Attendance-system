@@ -26,7 +26,10 @@
     },
     "android": {
       "package": "com.shusseki.app",
+      "usesCleartextTraffic": true,
       "permissions": [
+        "android.permission.BLUETOOTH",
+        "android.permission.BLUETOOTH_ADMIN",
         "android.permission.BLUETOOTH_SCAN",
         "android.permission.BLUETOOTH_ADVERTISE",
         "android.permission.BLUETOOTH_CONNECT",

@@ -65,6 +65,8 @@ export const BiometricCheckSchema = z.object({
   performedAt: z.number().int().nonnegative(),
   kind: z.enum(["fingerprint", "face"]),
   success: z.boolean(),
+  /** Why it failed/was skipped (e.g. "no biometric enrolled"); absent on success. */
+  reason: z.string().optional(),
 });
 export type BiometricCheck = z.infer<typeof BiometricCheckSchema>;
 

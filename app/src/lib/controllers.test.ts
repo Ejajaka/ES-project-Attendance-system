@@ -23,6 +23,7 @@ const jushinConfig: JushinConfig = {
   roomId: "room-1",
   sessionId: "sess-1",
   soshinSsid: "Shusseki-1",
+  soshinPass: "room-passphrase",
 };
 
 test("Soshin broadcasts a rolling code that verifies against its secret", async () => {
@@ -40,6 +41,30 @@ test("Soshin transmits the code through the ultrasonic adapter", async () => {
   const soshin = new SoshinController(sensors, soshinConfig);
   const code = await soshin.broadcast(ALIGNED);
   expect(sensors.transmittedCodes).toEqual([code]);
+});
+
+test("Soshin start raises the hotspot and stop tears everything down", async () => {
+  const sensors = new MockSensors();
+  const soshin = new SoshinController(sensors, soshinConfig);
+
+  const hotspot = await soshin.start();
+  expect(hotspot).toEqual({ ssid: "ShussekiMock", passphrase: "mock-passphrase" });
+  expect(sensors.started.ble).toBe(true);
+  expect(sensors.hotspot).not.toBeNull();
+
+  await soshin.stop();
+  expect(sensors.hotspot).toBeNull();
+});
+
+test("Jushin joins with the configured SSID and passphrase", async () => {
+  const sensors = new MockSensors();
+  const reporter = new MockReporter();
+  const jushin = new JushinController(sensors, jushinConfig, reporter);
+  await jushin.startAttendance();
+  expect(sensors.lastJoin).toEqual({
+    ssid: "Shusseki-1",
+    passphrase: "room-passphrase",
+  });
 });
 
 test("Jushin startAttendance performs a biometric and joins the Soshin WiFi", async () => {

@@ -1,0 +1,10 @@
+appId: com.shusseki.app
+---
+# Full automated smoke suite via the headless deep-link hook. Results stream to
+# logcat AND are reflected in the on-screen `smoke-summary` element (testID).
+# Waits for the suite to complete (summary shows "<x>/<y> automated passed").
+- openLink: "shusseki://smoke?run=all"
+- extendedWaitUntil:
+    visible: ".*automated passed.*"
+    timeout: 70000
+- assertVisible: ".*automated passed.*"

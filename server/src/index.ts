@@ -9,6 +9,7 @@ import {
 import { computeDevicePresence } from "./presence";
 import { MemoryStore, type Store } from "./store";
 import { SessionRegistry, type CreateSessionInput } from "./sessions";
+import type { E2eEvent } from "./store";
 
 /**
  * Shusseki fusion server. Ingests Soshin/Jushin reports, computes per-modality
@@ -29,6 +30,27 @@ export function createApp(store: Store, sessions: SessionRegistry): Hono {
   );
 
   app.get("/health", (c) => c.json({ ok: true }));
+
+  app.post("/api/e2e", async (c) => {
+    let event: E2eEvent;
+    try {
+      event = (await c.req.json()) as E2eEvent;
+    } catch {
+      return c.json({ error: "invalid JSON" }, 400);
+    }
+    if (!event?.sessionId || !event?.deviceId || !event?.role || !event?.phase) {
+      return c.json(
+        { error: "sessionId, deviceId, role and phase are required" },
+        400,
+      );
+    }
+    store.e2eUpsert({ ...event, at: event.at ?? Date.now() });
+    return c.json({ ok: true }, 201);
+  });
+
+  app.get("/api/e2e/:id", (c) => {
+    return c.json({ sessionId: c.req.param("id"), events: store.e2eForSession(c.req.param("id")) });
+  });
 
   app.post("/api/sessions", async (c) => {
     let body: CreateSessionInput;

@@ -23,9 +23,25 @@ class ShussekiBiometricModule : Module() {
     }
   }
 
-  private fun perform(kind: String): Map<String, Any> {
+  private fun perform(kind: String): Map<String, Any?> {
     val activity = appContext.currentActivity as? FragmentActivity
-      ?: return result(kind, false)
+      ?: return result(kind, false, "no activity")
+
+    // Don't show a dead prompt when the device can't biometrically authenticate.
+    // We ask for STRONG (fingerprint) specifically — our default kind — and if
+    // none is enrolled or the sensor is unavailable, report why instead.
+    val manager = BiometricManager.from(activity)
+    val can = manager.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG)
+    if (can != BiometricManager.BIOMETRIC_SUCCESS) {
+      val reason = when (can) {
+        BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE -> "no biometric hardware"
+        BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED -> "no biometric enrolled"
+        BiometricManager.BIOMETRIC_ERROR_HW_UNAVAILABLE -> "biometric hardware unavailable"
+        else -> "canAuthenticate=$can"
+      }
+      return result(kind, false, reason)
+    }
+
     val executor: Executor = ContextCompat.getMainExecutor(activity)
     val promptInfo = BiometricPrompt.PromptInfo.Builder()
       .setTitle("Shusseki attendance")
@@ -34,6 +50,7 @@ class ShussekiBiometricModule : Module() {
       .build()
 
     var success = false
+    var failureReason: String? = null
     val latch = java.util.concurrent.CountDownLatch(1)
     val prompt = BiometricPrompt(activity, executor,
       object : BiometricPrompt.AuthenticationCallback() {
@@ -42,22 +59,24 @@ class ShussekiBiometricModule : Module() {
           latch.countDown()
         }
         override fun onAuthenticationError(code: Int, err: CharSequence) {
+          failureReason = err.toString()
           latch.countDown()
         }
         override fun onAuthenticationFailed() {
-          latch.countDown()
+          // Not a terminal error (e.g. partial print); keep waiting for retry.
         }
       })
     activity.runOnUiThread { prompt.authenticate(promptInfo) }
     latch.await(30, java.util.concurrent.TimeUnit.SECONDS)
-    return result(kind, success)
+    return result(kind, success, failureReason)
   }
 
-  private fun result(kind: String, success: Boolean): Map<String, Any> {
+  private fun result(kind: String, success: Boolean, reason: String? = null): Map<String, Any?> {
     return mapOf(
       "performedAt" to System.currentTimeMillis(),
       "kind" to kind,
       "success" to success,
+      "reason" to reason,
     )
   }
 }
