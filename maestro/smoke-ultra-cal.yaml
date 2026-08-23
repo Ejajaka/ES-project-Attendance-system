@@ -1,9 +1,10 @@
 appId: com.shusseki.app
 ---
-# Sweep ultrasonic baseFreq 18.5kHz -> 100Hz at max amplitude. Waits for the
-# calibration run to finish, then confirms it reported a PASS or FAIL outcome.
-- openLink: "shusseki://smoke?run=ultra-cal"
+# Ultrasonic presence-stamp self-test (transmit + record on one device).
+# Waits for the run to finish; a PASS or FAIL is both a valid result (AGC/speaker
+# coupling makes single-device loopback marginal — real presence is cross-device).
+- openLink: "shusseki://smoke?run=ultra-presence"
 - extendedWaitUntil:
-    visible: "ultra-cal: (PASS|FAIL)"
-    timeout: 180000
-- assertVisible: "ultra-cal: (PASS|FAIL)"
+    visible: "ultra-presence: (PASS|FAIL)"
+    timeout: 40000
+- assertVisible: "ultra-presence: (PASS|FAIL)"

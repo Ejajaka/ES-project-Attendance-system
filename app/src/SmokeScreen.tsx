@@ -137,7 +137,7 @@ export function buildChecks(settings: Settings, serverUrl: string): Check[] {
     },
     {
       id: "ultra-presence",
-      label: "Ultrasonic chirp presence (8–14kHz)",
+      label: "Ultrasonic presence stamp (1.8kHz bursts)",
       run: async (log) => {
         // Concurrent transmit+record (speaker→mic) presence self-test.
         const o = await ultraLoopback(3000);
