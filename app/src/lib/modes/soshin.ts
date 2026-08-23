@@ -56,6 +56,13 @@ export class SoshinController {
       digits: this.config.digits,
     });
     this.lastCode = code;
+    // Refresh the code over the (reliable) BLE advertisement, then emit the
+    // presence stamp on the speaker. Code no longer travels over audio.
+    await this.sensors.ble.start("soshin", {
+      roomId: this.config.roomId,
+      nodeId: this.config.nodeId,
+      code,
+    });
     await this.sensors.ultrasonic.transmit(code);
     return code;
   }

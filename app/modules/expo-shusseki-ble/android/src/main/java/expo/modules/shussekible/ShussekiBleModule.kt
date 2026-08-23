@@ -83,8 +83,8 @@ class ShussekiBleModule : Module() {
       )
     }
 
-    AsyncFunction("advertise") { roomId: String, nodeId: String ->
-      startAdvertising(roomId, nodeId)
+    AsyncFunction("advertise") { roomId: String, nodeId: String, code: String? ->
+      startAdvertising(roomId, nodeId, code)
     }
 
     AsyncFunction("stopAdvertise") {
@@ -129,7 +129,7 @@ class ShussekiBleModule : Module() {
     return adapter.isEnabled
   }
 
-  private fun startAdvertising(roomId: String, nodeId: String) {
+  private fun startAdvertising(roomId: String, nodeId: String, code: String?) {
     val adapter = bluetoothAdapter ?: throw IllegalStateException("Bluetooth unavailable")
     advertiser = adapter.bluetoothLeAdvertiser ?: throw IllegalStateException("LE advertiser unavailable")
 
@@ -139,11 +139,11 @@ class ShussekiBleModule : Module() {
       .setConnectable(false)
       .build()
 
-    // Encode the node id (room + node) into manufacturer data.
-    val payload = "$roomId|$nodeId".toByteArray(Charsets.UTF_8)
+    // Encode room + node + optional rolling code into manufacturer data.
+    val payload = "$roomId|$nodeId" + (if (!code.isNullOrEmpty()) "|$code" else "")
     val data = AdvertiseData.Builder()
       .setIncludeDeviceName(false)
-      .addManufacturerData(0xABCD, payload)
+      .addManufacturerData(0xABCD, payload.toByteArray(Charsets.UTF_8))
       .build()
 
     advertiseCallback = object : AdvertiseCallback() {
@@ -189,15 +189,17 @@ class ShussekiBleModule : Module() {
   private fun toReadings(): List<Map<String, Any>> {
     return scanResults.mapNotNull { r ->
       val rec = r.scanRecord ?: return@mapNotNull null
-      // Only Shusseki Soshins advertise under manufacturer id 0xABCD, with
-      // payload "roomId|nodeId" — lets Jushin identify its peer among neighbors.
+      // Shusseki Soshins advertise manufacturer id 0xABCD with payload
+      // "roomId|nodeId|code" — lets Jushin identify its peer and receive the code.
       val mfg = rec.getManufacturerSpecificData(0xABCD) ?: return@mapNotNull null
       val payload = String(mfg, Charsets.UTF_8)
-      val nodeId = payload.substringAfter('|', payload)
-      if (nodeId.isBlank()) return@mapNotNull null
+      val parts = payload.split('|')
+      val nodeId = parts.getOrNull(1)?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+      val code = parts.getOrNull(2)?.takeIf { it.isNotBlank() }
       mapOf(
         "nodeId" to nodeId,
         "rssi" to r.rssi,
+        "code" to (code ?: ""),
       )
     }
   }

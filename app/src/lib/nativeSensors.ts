@@ -46,7 +46,7 @@ export class NativeSensors implements DeviceSensors {
   ble: BleAdapter = {
     start: async (mode, opts) => {
       if (mode === "soshin") {
-        await bleAdvertise(opts.roomId, opts.nodeId);
+        await bleAdvertise(opts.roomId, opts.nodeId, opts.code);
       }
     },
     stop: async () => {

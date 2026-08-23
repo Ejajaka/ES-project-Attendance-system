@@ -13,19 +13,18 @@ import expo.modules.kotlin.Promise
 import expo.modules.kotlin.modules.ModuleDefinition
 
 /**
- * Ultrasonic PRESENCE stamp, not a data link.
+ * Ultrasonic PRESENCE stamp — but engineered for the hardware we actually have.
  *
- * Design (architecture "detection-only"): Soshin emits a repeating 8-14kHz
- * linear chirp; Jushin runs a matched-filter presence test — is the chirp's
- * time-frequency trajectory present? This is far more robust than per-symbol
- * FSK decoding over a phone speaker-mic (band-limited, distorted, echo-y,
- * with nondeterministic record start latency). We do not try to carry a code
- * over the audible path; identity + rolling code ride the (reliable) BLE
- * channel instead.
+ * Chassis (8-14kHz chirp) proved too weak on real phone speakers/mics at
+ * useful volume, so the stamp is a FIXED, clearly-audible TONE BURST around
+ * 1.8kHz — in every phone's efficient passband. Presence is decided by a
+ * gain-invariant test: energy at the tone frequency vs a neighbour (off-freq)
+ * reference, summed and required to repeat the on-off burst cadence. Repeating
+ * the burst defeats mic AGC and room echoes far better than any single-tone.
  *
- * 8-14kHz is deliberately in-band: every phone we tested rolls off hard at
- * 15-18.5kHz, but passes 8-14kHz cleanly. Reliability wins over inaudibility
- * for a research prototype.
+ * This is a DETECTION-ONLY link: no code is carried; identity + rolling code
+ * travel over BLE (reliable). Room-boundedness is the research property being
+ * measured.
  */
 class ShussekiUltrasonicModule : Module() {
   private val sampleRate = 44100
@@ -52,11 +51,11 @@ class ShussekiUltrasonicModule : Module() {
       )
     }
 
-    /** Soshin: emit the repeating chirp presence stamp (payload ignored). */
+    /** Soshin: emit the repeating tone-burst presence stamp (payload ignored). */
     AsyncFunction("transmit") { _code: String ->
       transmitStamp()
     }
-    /** Jushin: record and decide whether the chirp stamp is present. */
+    /** Jushin: record and decide whether the tone-burst stamp is present. */
     AsyncFunction("listen") { timeoutMs: Double ->
       detectPresence(timeoutMs.toLong())
     }
@@ -71,49 +70,43 @@ class ShussekiUltrasonicModule : Module() {
   /** Concurrent transmit+record on one device (speaker→mic path) for smoke tests. */
   private fun loopback(timeoutMs: Long): Map<String, Any?> {
     val tx = thread { transmitStamp() }
-    Thread.sleep(30)
+    Thread.sleep(40)
     val result = detectPresence(timeoutMs)
     tx.join()
     return result
   }
 
-  // --- encode: chirp stamp ------------------------------------------------
+  // --- encode: fixed-tone burst stamp --------------------------------
 
-  private val chirpStart = 8000.0
-  private val chirpEnd = 14000.0
-  private val chirpMs = 80L
-  private val stampRepeats = 4
-  private val gapMs = 240L
+  private val stampFreq = 1800.0
+  private val refFreq = 2300.0 // off-frequency neighbour used as the noise reference
+  private val burstMs = 120L
+  private val bursts = 4
+  private val burstGapMs = 220L
   private val amplitude = 0.97
 
-  /** Generate one 8->14kHz linear chirp of `durMs`. Continuous phase. */
-  private fun chirp(durMs: Long): ShortArray {
-    val n = (sampleRate * durMs / 1000.0).toInt()
-    val buf = ShortArray(n)
-    val durS = durMs / 1000.0
-    val slope0 = 2.0 * Math.PI * chirpStart
-    val slope1 = 2.0 * Math.PI * (chirpEnd - chirpStart) / (2.0 * durS)
-    for (i in 0 until n) {
-      val t = i.toDouble() / sampleRate
-      val phase = slope0 * t + slope1 * t * t
-      val env = 0.5 - 0.5 * Math.cos(2.0 * Math.PI * i / n)
-      buf[i] = (Math.sin(phase) * amplitude * env * Short.MAX_VALUE).toInt().toShort()
-    }
-    return buf
-  }
-
   private fun transmitStamp() {
-    val chip = chirp(chirpMs)
-    val silence = ShortArray((sampleRate * gapMs / 1000).toInt())
-    val parts = mutableListOf<ShortArray>()
-    for (i in 0 until stampRepeats) {
-      parts.add(chip)
-      if (i < stampRepeats - 1) parts.add(silence)
-    }
-    val total = parts.sumOf { it.size }
+    val burstN = (sampleRate * burstMs / 1000.0).toInt()
+    val gapN = (sampleRate * burstGapMs / 1000.0).toInt()
+    val rampN = (sampleRate * 3 / 1000).toInt() // ~3ms soft edges
+    val total = bursts * burstN + (bursts - 1) * gapN
     val pcm = ShortArray(total)
-    var off = 0
-    for (p in parts) { p.copyInto(pcm, off); off += p.size }
+    var idx = 0
+    var phase = 0.0
+    val phaseInc = 2.0 * Math.PI * stampFreq / sampleRate
+    for (b in 0 until bursts) {
+      // burst: continuous-phase tone, soft 3ms ramp at burst edges
+      for (j in 0 until burstN) {
+        val edge = minOf(j, burstN - 1 - j, rampN - 1)
+        val env = if (edge > 0) edge.toDouble() / rampN else 0.0
+        pcm[idx++] = (Math.sin(phase) * amplitude * env * Short.MAX_VALUE).toInt().toShort()
+        phase += phaseInc
+      }
+      // gap: silence
+      for (g in 0 until gapN) {
+        if (idx < total) pcm[idx++] = 0
+      }
+    }
 
     val track = AudioTrack.Builder()
       .setAudioFormat(
@@ -131,10 +124,9 @@ class ShussekiUltrasonicModule : Module() {
     track.release()
   }
 
-  // --- matched-filter detection ------------------------------------------
+  // --- matched detection ---------------------------------------------
 
-  private val frameMs = 20L // spectrogram time resolution
-  private val bins = Array(16) { 7000.0 + it * 500.0 } // 7000..14500 Hz
+  private val frameMs = 20L
 
   private fun detectPresence(timeoutMs: Long): Map<String, Any?> {
     val minBuf = AudioRecord.getMinBufferSize(
@@ -158,10 +150,6 @@ class ShussekiUltrasonicModule : Module() {
         if (r <= 0) break
         totalRead += r
       }
-      android.util.Log.i(
-        "ShussekiUltrasonic",
-        "CAPTURE state=${record.recordingState} read=$totalRead n=$n minBuf=$minBuf",
-      )
     } finally {
       try { record.stop() } catch (_: IllegalStateException) {}
       record.release()
@@ -169,96 +157,64 @@ class ShussekiUltrasonicModule : Module() {
 
     val frame = (sampleRate * frameMs / 1000).toInt()
     val frames = n / frame
-    if (frames < 4) {
-      return mapOf("received" to false, "valid" to null, "code" to null, "snr" to null, "missReason" to "no_signal")
-    }
 
-    // Coarse spectrogram: goertzel magnitude per (frame, bin).
-    val spec = Array(frames) { DoubleArray(bins.size) }
-    for (f in 0 until frames) {
-      for (b in bins.indices) {
-        spec[f][b] = goertzel(buf, f * frame, frame, bins[b])
-      }
-    }
-
-    // Differential discriminator: an up-chirp concentrates energy on the chirp
-    // trajectory but essentially NONE on the mirror/down-chirp trajectory. A
-    // room's tonal noise (fans, hum) doesn't prefer either, so (chirp - mirror)/total
-    // separates a real chirp from ambient far better than raw ratio alone.
-    val chirpFrames = (chirpMs / frameMs).toInt()
-    val binAt = IntArray(chirpFrames)
-    for (i in 0 until chirpFrames) {
-      val t = i.toDouble() / chirpFrames
-      val f = chirpStart + (chirpEnd - chirpStart) * t
-      binAt[i] = nearestBin(f)
-    }
-
-    var bestScore = -1.0
-    var bestChirp = 0.0
-    var bestRatio = 0.0
-    var bestOff = 0
-    for (off in 0..(frames - chirpFrames)) {
-      var chirpSum = 0.0
-      var counterSum = 0.0
-      var total = 0.0
-      for (i in 0 until chirpFrames) {
-        val row = spec[off + i]
-        chirpSum += row[binAt[i]]
-        counterSum += row[binAt[chirpFrames - 1 - i]]
-        for (b in bins.indices) total += row[b]
-      }
-      if (total > 0.0) {
-        val score = (chirpSum - counterSum) / total
-        val ratio = chirpSum / total
-        if (score > bestScore) { bestScore = score; bestChirp = chirpSum; bestRatio = ratio; bestOff = off }
-      }
-    }
-
-    // Diagnostic: total energy in the whole observed band + strongest cell, so we
-    // can distinguish "chirp not arriving" from "trajectory match needs tuning".
+    // Per-frame tone vs neighbour-reference ratio; a real burst makes the tone
+    // freq dominate its neighbour. Gain-invariant (AGC cancels in the ratio).
+    val toneMag = DoubleArray(frames)
+    val refMag = DoubleArray(frames)
     var grandTotal = 0.0
-    var cellMax = 0.0
-    for (f in 0 until frames) for (b in bins.indices) {
-      grandTotal += spec[f][b]
-      if (spec[f][b] > cellMax) cellMax = spec[f][b]
+    for (f in 0 until frames) {
+      toneMag[f] = goertzel(buf, f * frame, frame, stampFreq)
+      refMag[f] = goertzel(buf, f * frame, frame, refFreq)
+      grandTotal += toneMag[f] + refMag[f]
+    }
+
+    // Count frames that are clearly "on tone" and the number of on-RUNS (bursts).
+    val burstFrames = (burstMs / frameMs).toInt()
+    val onToneRatio = 3.0
+    var onFrames = 0
+    var runs = 0
+    var inRun = false
+    var peakTone = 0.0
+    for (f in 0 until frames) {
+      val on = refMag[f] > 0 && toneMag[f] > onToneRatio * refMag[f]
+      if (on) {
+        onFrames++
+        if (!inRun) { runs++; inRun = true }
+      } else {
+        inRun = false
+      }
+      if (toneMag[f] > peakTone) peakTone = toneMag[f]
+    }
+
+    // Cadence: a stamp is `bursts` on-bursts separated by gaps. Require roughly
+    // that many distinct on-runs and a plausible on-frame total.
+    val runsOk = runs >= bursts - 1 && runs <= bursts + 2
+    val totalOk = onFrames in (bursts * burstFrames - burstFrames)..(bursts * burstFrames + burstFrames)
+    val present = runsOk && totalOk && peakTone > 1e7
+    val score = if (runsOk) onFrames.toDouble() / (bursts * burstFrames) else 0.0
+
+    val miss = when {
+      present -> "none"
+      runs >= 1 -> "decode_failed"
+      else -> "no_signal"
     }
     android.util.Log.i(
       "ShussekiUltrasonic",
-      "PRES grandTotal=${String.format("%.0f", grandTotal)} cellMax=${String.format("%.0f", cellMax)} " +
-        "bestScore=${String.format("%.3f", bestScore)} bestChirp=${String.format("%.0f", bestChirp)} " +
-        "ratio=${String.format("%.3f", bestRatio)} off=$bestOff",
+      "TONE onFrames=$onFrames runs=$runs expected=${bursts * burstFrames} peakTone=${String.format("%.0f", peakTone)} present=$present",
     )
-
-    val diffThreshold = 0.15
-    val chirpFloor = 2e9 // provisional; should be fit from ambient+present data collection
-    val present = bestScore >= diffThreshold && bestChirp > chirpFloor
-    val miss = when {
-      present -> "none"
-      bestScore >= diffThreshold * 0.5 -> "decode_failed"
-      else -> "no_signal"
-    }
     return mapOf(
       "received" to present,
       "valid" to (if (present) true else null),
       "code" to null,
-      "snr" to (bestScore * 1000.0),
+      "snr" to (if (present) score * 100.0 else score * 100.0),
       "missReason" to miss,
-      "ratio" to bestScore,
+      "ratio" to score,
       "energy" to grandTotal,
     )
   }
 
-  private fun nearestBin(freq: Double): Int {
-    var best = 0
-    var bestD = Double.MAX_VALUE
-    for (i in bins.indices) {
-      val d = Math.abs(bins[i] - freq)
-      if (d < bestD) { bestD = d; best = i }
-    }
-    return best
-  }
-
-  /** Goertzel magnitude at `freq` over buf[start, start+len). */
+  /** Goertzel magnitude (squared) at `freq` over buf[start, start+len). */
   private fun goertzel(buf: ShortArray, start: Int, len: Int, freq: Double): Double {
     val k = freq / sampleRate * len
     val w = 2.0 * Math.PI * k / len

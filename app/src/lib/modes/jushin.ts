@@ -46,6 +46,14 @@ export class JushinController {
       this.sensors.ultrasonic.listen(),
     ]);
 
+    // Code-over-BLE: the rolling code now arrives via the Soshin's BLE
+    // advertisement (reliable channel), not over audio. Surface it in the
+    // ultrasonic field so the server's existing TOTP re-verification applies.
+    const bleCode = ble.readings.find((r) => r.code)?.code;
+    const ultrasonicReport = bleCode
+      ? { received: true, valid: true, code: bleCode, snr: ultrasonic.snr }
+      : ultrasonic;
+
     const report: DeviceReport = {
       deviceId: this.config.deviceId,
       mode: "jushin",
@@ -54,7 +62,7 @@ export class JushinController {
       timestamp: now,
       ble,
       wifi,
-      ultrasonic,
+      ultrasonic: ultrasonicReport,
       biometric: this.startBio ?? undefined,
     };
 

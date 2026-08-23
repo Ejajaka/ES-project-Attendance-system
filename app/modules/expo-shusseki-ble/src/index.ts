@@ -3,6 +3,8 @@ import { requireNativeModule } from "expo";
 export interface NativeBleReading {
   nodeId: string;
   rssi: number;
+  /** Rolling code advertised by the Soshin ("" if not present). */
+  code?: string;
 }
 
 const NativeBle = requireNativeModule("ShussekiBle");
@@ -15,9 +17,13 @@ export interface NativePermissionResponse {
   expires: string;
 }
 
-/** Soshin: advertise a room beacon identifying this node. */
-export async function bleAdvertise(roomId: string, nodeId: string): Promise<void> {
-  return NativeBle.advertise(roomId, nodeId);
+/** Soshin: advertise a room beacon identifying this node (+ optional rolling code). */
+export async function bleAdvertise(
+  roomId: string,
+  nodeId: string,
+  code?: string,
+): Promise<void> {
+  return NativeBle.advertise(roomId, nodeId, code ?? null);
 }
 
 export async function bleStopAdvertise(): Promise<void> {

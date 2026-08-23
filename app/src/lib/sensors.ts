@@ -20,7 +20,10 @@ export interface HotspotInfo {
 
 export interface BleAdapter {
   /** Soshin advertises a room beacon; Jushin scans. */
-  start(mode: "soshin" | "jushin", opts: { roomId: string; nodeId: string }): Promise<void>;
+  start(
+    mode: "soshin" | "jushin",
+    opts: { roomId: string; nodeId: string; code?: string },
+  ): Promise<void>;
   stop(): Promise<void>;
   /** Snapshot of node readings currently visible to this device. */
   observe(): Promise<BleObservation>;

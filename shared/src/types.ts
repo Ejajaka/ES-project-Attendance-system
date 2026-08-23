@@ -17,6 +17,8 @@ export const BleNodeReadingSchema = z.object({
   nodeId: z.string(),
   rssi: z.number(), // dBm, typically negative
   timestamp: z.number().int().nonnegative().optional(), // defaults to report time
+  /** Optional rolling code carried by the node's BLE advertisement (code-over-BLE). */
+  code: z.string().optional(),
 });
 export type BleNodeReading = z.infer<typeof BleNodeReadingSchema>;
 
