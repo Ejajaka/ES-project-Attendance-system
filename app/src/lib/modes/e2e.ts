@@ -91,8 +91,13 @@ export class E2eController {
   }
 
   private async requestPerms(): Promise<void> {
-    const b = (await this.sensors.ble.requestPermissions?.()) ?? true;
-    const u = (await this.sensors.ultrasonic.requestPermissions?.()) ?? true;
+    // Native requestPermissionsAsync hangs on some real devices when the
+    // permission controller isn't wired; permissions are pre-granted via adb
+    // pm grant in the runbook anyway, so check (not prompt) instead.
+    const [b, u] = await Promise.all([
+      this.sensors.ble.getPermissions?.() ?? Promise.resolve(true),
+      this.sensors.ultrasonic.getPermissions?.() ?? Promise.resolve(true),
+    ]);
     this.log(`[e2e] perms ble=${b} ultrasonic=${u}`);
   }
 

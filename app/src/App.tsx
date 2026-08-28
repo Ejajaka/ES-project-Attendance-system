@@ -20,6 +20,7 @@ import { SERVER_URL, DEFAULT_SETTINGS, type Settings } from "./settings";
 import SmokeScreen from "./SmokeScreen";
 import E2eScreen from "./E2eScreen";
 import type { E2eRole } from "./lib/modes/e2e";
+import { VERSION } from "./version";
 
 // Stable-enough device id for the prototype (resets on reinstall).
 // Prefers crypto.randomUUID() when the runtime exposes it, but falls back to a
@@ -69,6 +70,7 @@ export default function App() {
   // Remote/hardware hook: `shusseki://smoke?run=all` or `shusseki://e2e?role=…`
   // boots straight into the automated suite; results stream to logcat.
   useEffect(() => {
+    console.log(`[app] version ${VERSION}`);
     const onUrl = (url: string | null) => {
       const l = parseLaunch(url);
       if (!l) return;
@@ -86,7 +88,7 @@ export default function App() {
       <ScrollView contentContainerStyle={styles.container}>
         <Text style={styles.title}>Shusseki</Text>
         <Text style={styles.subtitle}>Room-level continuous attendance</Text>
-        <Text style={styles.device}>device: {DEVICE_ID}</Text>
+        <Text style={styles.device}>device: {DEVICE_ID} · {VERSION}</Text>
 
         {mode === "none" && (
           <View style={styles.row}>

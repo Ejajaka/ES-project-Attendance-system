@@ -37,6 +37,7 @@ export class MockSensors implements DeviceSensors {
       this.permissionsRequested.ble = true;
       return true;
     },
+    getPermissions: async () => true,
   };
 
   wifi: WifiAdapter = {
@@ -71,6 +72,7 @@ export class MockSensors implements DeviceSensors {
       this.permissionsRequested.ultrasonic = true;
       return true;
     },
+    getPermissions: async () => true,
   };
 
   biometric: BiometricAdapter = {

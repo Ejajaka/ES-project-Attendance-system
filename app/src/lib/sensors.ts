@@ -29,6 +29,8 @@ export interface BleAdapter {
   observe(): Promise<BleObservation>;
   /** Prompt for runtime BLE permissions; true when all are granted. */
   requestPermissions?: () => Promise<boolean>;
+  /** Non-prompting check for runtime BLE permissions. */
+  getPermissions?: () => Promise<boolean>;
 }
 
 export interface WifiAdapter {
@@ -52,6 +54,8 @@ export interface UltrasonicAdapter {
   stopListener(): Promise<void>;
   /** Prompt for the microphone permission. */
   requestPermissions?: () => Promise<boolean>;
+  /** Non-prompting check for the microphone permission. */
+  getPermissions?: () => Promise<boolean>;
 }
 
 export interface BiometricAdapter {

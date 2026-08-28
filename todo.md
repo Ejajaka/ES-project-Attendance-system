@@ -56,3 +56,31 @@ cd app/android && ./gradlew assembleRelease
   the old broken build path).
 - The `expo-modules-core@2.2.3` consistency note is now satisfied by npm's
   normal hoisting.
+
+## P5 — On-device findings & next fixes (session 2026-08-28)
+Verified on **real hardware** (Pixel 8a = Soshin, Galaxy M34 = Jushin, USB adb):
+- ✅ BLE advertise (5s), BLE scan (0 seen — single-device can't see itself),
+  WiFi RSSI (−41 dBm), LocalOnlyHotspot (`AndroidShare_4246`), ultrasonic mic
+  (band energy present), all unit tests (67) pass.
+- ❌ Ultrasonic speaker→mic **loopback fails ~18.5 kHz** on the Pixel 8a — a
+  documented hardware ceiling (PLAN §3/§4), not a bug. Try a lower tone
+  (18.5→15 kHz calibration sweep exists in `maestro/smoke-ultra-cal.yaml`).
+- ⚠️ Native `requestPermissionsAsync` **intermittently hangs** on device
+  (Expo permission-manager not always wired). Workaround: E2E/smoke now use
+  `getPermissionsAsync` (non-prompting) since perms are pre-granted via
+  `adb pm grant`. Root-cause the hang in `modules/expo-shusseki-*/`.
+- ⚠️ Server round-trip over `adb reverse tcp:8787` didn't complete on-device;
+  server binds `0.0.0.0` now, but the phone→server fetch needs one more look
+  (cleartext is allowed; may be IPv6-localhost vs reverse tunnel).
+- ⚠️ **Release bundling in this monorepo is broken**: `assembleRelease` fails at
+  `createBundleReleaseJsAndAssets` ("Unable to resolve ./src/main.tsx from
+  C:\dev\shusseki"). `app/android/` is gitignored (prebuild-generated), so the
+  local `entryFile`/`root` overrides + root `metro.config.js` that fix it aren't
+  committed. Make release-bundle work from the app dir (see root
+  `metro.config.js` + README "Deployment & versioning") and commit the recipe.
+
+## P6 — Deployment versioning (added)
+- `app/src/version.ts` = source of truth (`APP_VERSION`, `BUILD`). Bump `BUILD`
+  per patch; version shows on home screen + logcat `[app] version vX.Y.Z+BUILD`.
+- Reliable deploy = self-contained APK (embedded JS, no Metro), verified via the
+  version log. Dev-client + Metro remains the fast path but risks stale bundles.

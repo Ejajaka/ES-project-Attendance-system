@@ -94,15 +94,46 @@ reports BLE/WiFi). Set `EXPO_PUBLIC_SERVER_URL` to point at the fusion server
 > (Vitest). The native modules (`modules/expo-shusseki-*`) are the only
 > device-dependent code and need a real build to exercise.
 
+## Deployment & versioning
+
+Every patch that is deployed to hardware is stamped with a build number from
+`app/src/version.ts` (`BUILD`). Bump it on every change you ship, then deploy a
+**self-contained APK** (JS bundle embedded — no Metro dependency, so there is no
+stale-bundle ambiguity):
+
+```bash
+# bump BUILD in app/src/version.ts, then:
+cd app/android
+ENTRY_FILE=src/main.tsx gradlew assembleRelease   # see "Known issues" below
+adb install -r app/build/outputs/apk/release/app-release.apk
+adb logcat -s ReactNativeJS | grep "version"      # confirms the deployed patch
+```
+
+The running version is also shown on the app's home screen
+(`device: <id> · vX.Y.Z+BUILD`) and logged to logcat at startup
+(`[app] version vX.Y.Z+BUILD`), so you can always confirm which patch a device
+is actually running.
+
+For USB-connected devices the fusion server is reachable via
+`adb reverse tcp:8787 tcp:8787` (the server binds `0.0.0.0`).
+
 ## What is implemented vs. next
 
 **Done:** rolling-code TOTP + server re-verification, per-modality confidence,
 fusion (noisy-or / average / weighted), evaluation metrics, the fusion server
 with the full ingest→presence→evaluate pipeline, the two-mode Expo app with a
-clean sensor seam, native-module scaffolds (BLE/WiFi/ultrasonic/biometric), and
-the comparative evaluation runner.
+clean sensor seam, native-module scaffolds (BLE/WiFi/ultrasonic/biometric), the
+comparative evaluation runner, and build versioning. Verified on real hardware
+(Pixel 8a + Galaxy M34): BLE advertise/scan, WiFi RSSI, LocalOnlyHotspot, and
+the ultrasonic mic all exercise on-device; the ultrasonic speaker→mic loopback
+does **not** pass ~18.5 kHz on the Pixel 8a (see PLAN §3/§4 — expected on
+consumer hardware).
 
-**Next (PLAN §5):** spikes on `LocalOnlyHotspot` lifecycle, background-mic
-reliability, and cross-OEM WiFi RSSI; lock the BLE combining rule + sample size;
-run controlled positive/negative data-collection sessions per
-`docs/test-protocol.md`.
+**Next (PLAN §5 + todo.md):** spikes on `LocalOnlyHotspot` lifecycle,
+background-mic reliability, and cross-OEM WiFi RSSI; lock the BLE combining rule
++ sample size; run controlled positive/negative data-collection sessions per
+`docs/test-protocol.md`. Also outstanding: fix the Android **release** bundling
+in this monorepo (`app/src/lib/../android` is gitignored/prebuild-generated, so
+the `entryFile`/`root` overrides that make `assembleRelease` bundle are
+local-only), root-cause the intermittent native `requestPermissionsAsync` hang,
+and close the server round-trip over `adb reverse`.

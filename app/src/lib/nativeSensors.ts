@@ -16,6 +16,7 @@ import {
   bleStopAdvertise,
   bleScanOnce,
   bleRequestPermissionsAsync,
+  bleGetPermissionsAsync,
 } from "expo-shusseki-ble";
 import {
   wifiConnectSoshin,
@@ -30,6 +31,7 @@ import {
   ultraStartListener,
   ultraStopListener,
   ultraRequestPermissionsAsync,
+  ultraGetPermissionsAsync,
 } from "expo-shusseki-ultrasonic";
 import { bioPerform } from "expo-shusseki-biometric";
 
@@ -63,6 +65,9 @@ export class NativeSensors implements DeviceSensors {
     },
     requestPermissions: async () => {
       return (await bleRequestPermissionsAsync()).granted;
+    },
+    getPermissions: async () => {
+      return (await bleGetPermissionsAsync()).granted;
     },
   };
 
@@ -124,6 +129,9 @@ export class NativeSensors implements DeviceSensors {
     },
     requestPermissions: async () => {
       return (await ultraRequestPermissionsAsync()).granted;
+    },
+    getPermissions: async () => {
+      return (await ultraGetPermissionsAsync()).granted;
     },
   };
 

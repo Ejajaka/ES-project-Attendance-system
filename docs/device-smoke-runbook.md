@@ -17,6 +17,11 @@ adb shell am start -n com.shusseki.app/.MainActivity
 # 0b. (optional) expose the dev server running on the PC as localhost:8787
 adb reverse tcp:8787 tcp:8787
 cd server && npm run dev   # separate terminal
+
+# 0c. confirm the deployed patch on the device
+adb logcat -s ReactNativeJS | grep "\[app\] version"   # expect vX.Y.Z+BUILD
+# (version also shows on the home screen; bump BUILD in app/src/version.ts
+#  every time you ship a change — see README "Deployment & versioning")
 ```
 
 ## 1. Grant runtime permissions (app doesn't prompt on its own yet)
