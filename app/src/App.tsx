@@ -10,18 +10,22 @@ import {
   type StyleProp,
   type ViewStyle,
 } from "react-native";
+import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
+import { useFonts } from "expo-font";
 import type { E2eRole } from "./lib/modes/e2e";
 import type { Settings } from "./settings";
 import { DEFAULT_SETTINGS } from "./settings";
 import { DEVICE_ID } from "./identity";
 import { VERSION } from "./version";
-import { colors, MONO, radius, spacing, text } from "./theme";
+import { colors, DEPARTURE, MONO, radius, spacing, text } from "./theme";
 import {
+  BloomField,
   Divider,
   Hazard,
   HudButton,
+  Lamp,
   Panel,
-  StatusDot,
+  WireGrid,
 } from "./components/hud";
 import SoshinScreen from "./SoshinScreen";
 import JushinScreen from "./JushinScreen";
@@ -57,6 +61,10 @@ export default function App() {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [launch, setLaunch] = useState<Launch | null>(null);
   const [uptime, setUptime] = useState(0);
+  // Bundled pixel-mono face (Departure Mono, OFL) — the console's one voice.
+  const [fontsLoaded] = useFonts({
+    DepartureMono: require("../assets/fonts/DepartureMono-Regular.otf"),
+  });
 
   // Remote/hardware hook: `shusseki://smoke?run=all` or `shusseki://e2e?role=…`
   // boots straight into the automated suite; results stream to logcat.
@@ -81,61 +89,69 @@ export default function App() {
     return () => clearInterval(t);
   }, [mode]);
 
+  if (!fontsLoaded) {
+    // Hold on black until the display face is ready (sub-second on device).
+    return (
+      <SafeAreaProvider>
+        <SafeAreaView style={styles.safe} edges={["top", "left", "right", "bottom"]} />
+      </SafeAreaProvider>
+    );
+  }
+
   return (
-    <View style={styles.safe}>
-      <StatusBar barStyle="light-content" backgroundColor={colors.bg} />
-      {mode === "none" ? (
-        <HomeScreen
-          settings={settings}
-          uptime={uptime}
-          onSettingsChange={setSettings}
-          onPick={(m, l) => {
-            setMode(m);
-            setLaunch(l ?? null);
-          }}
-        />
-      ) : (
-        <ScrollView contentContainerStyle={styles.shell}>
-          {mode !== "smoke" && (
-            <SettingsPanel settings={settings} onChange={setSettings} />
-          )}
-          {mode === "soshin" && (
-            <SoshinScreen settings={settings} serverUrl={settings.serverUrl} onExit={() => setMode("none")} />
-          )}
-          {mode === "jushin" && (
-            <JushinScreen settings={settings} serverUrl={settings.serverUrl} onExit={() => setMode("none")} />
-          )}
-          {mode === "smoke" && (
-            <SmokeScreen
-              settings={settings}
-              serverUrl={settings.serverUrl}
-              autoRun={launch?.screen === "smoke" ? launch.autoRun : undefined}
-              onExit={() => {
-                setMode("none");
-                setLaunch(null);
-              }}
-            />
-          )}
-          {mode === "e2e" && (
-            <E2eScreen
-              settings={settings}
-              serverUrl={settings.serverUrl}
-              role={launch?.screen === "e2e" ? launch.role : "both"}
-              onExit={() => {
-                setMode("none");
-                setLaunch(null);
-              }}
-            />
-          )}
-        </ScrollView>
-      )}
-    </View>
+    <SafeAreaProvider>
+      <SafeAreaView style={styles.safe} edges={["top", "left", "right", "bottom"]}>
+        <StatusBar barStyle="light-content" backgroundColor={colors.bg} hidden={false} />
+        {mode === "none" ? (
+          <HomeScreen
+            settings={settings}
+            uptime={uptime}
+            onSettingsChange={setSettings}
+            onPick={(m, l) => {
+              setMode(m);
+              setLaunch(l ?? null);
+            }}
+          />
+        ) : (
+          <View style={styles.shell}>
+            {mode !== "smoke" && <SettingsPanel settings={settings} onChange={setSettings} />}
+            {mode === "soshin" && (
+              <SoshinScreen settings={settings} serverUrl={settings.serverUrl} onExit={() => setMode("none")} />
+            )}
+            {mode === "jushin" && (
+              <JushinScreen settings={settings} serverUrl={settings.serverUrl} onExit={() => setMode("none")} />
+            )}
+            {mode === "smoke" && (
+              <SmokeScreen
+                settings={settings}
+                serverUrl={settings.serverUrl}
+                autoRun={launch?.screen === "smoke" ? launch.autoRun : undefined}
+                onExit={() => {
+                  setMode("none");
+                  setLaunch(null);
+                }}
+              />
+            )}
+            {mode === "e2e" && (
+              <E2eScreen
+                settings={settings}
+                serverUrl={settings.serverUrl}
+                role={launch?.screen === "e2e" ? launch.role : "both"}
+                onExit={() => {
+                  setMode("none");
+                  setLaunch(null);
+                }}
+              />
+            )}
+          </View>
+        )}
+      </SafeAreaView>
+    </SafeAreaProvider>
   );
 }
 
 /* ------------------------------------------------------------------ *
- * Home — the command console. Target user is a researcher/developer,
- * so it is a dense technical readout, not a marketing screen.
+ * Home — landscape command console. Big type, big switches, black field.
  * ------------------------------------------------------------------ */
 function HomeScreen({
   settings,
@@ -152,78 +168,71 @@ function HomeScreen({
   const ss = (uptime % 60).toString().padStart(2, "0");
   return (
     <ScrollView style={styles.safe} contentContainerStyle={styles.home}>
+      <BloomField a={colors.cyan} b={colors.purple} />
       <Hazard height={10} />
       <View style={styles.masthead}>
+        <WireGrid />
         <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm }}>
-          <StatusDot tone={colors.green} pulse />
-          <Text style={[text.hudSub, { letterSpacing: 3 }]}>システム稼働 · SYSTEM ONLINE</Text>
-          <View style={{ flex: 1 }} />
-          <Text style={[text.tiny, { color: colors.dim, letterSpacing: 2 }]}>{VERSION}</Text>
+          <Text style={[text.hudJapanese, { fontSize: 48 }]}>出 席</Text>
+          <View style={{ gap: 2, flex: 1 }}>
+            <Text style={[text.hudTitle, { fontSize: 26 }]}>SHUSSEKI</Text>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+              <Lamp tone={colors.green} size={7} />
+              <Text style={[text.hudSub, { color: colors.green }]}>
+                システム稼働 · SYSTEM ONLINE
+              </Text>
+            </View>
+          </View>
+          <Text style={[text.tiny, { color: colors.dim }]}>{VERSION}</Text>
         </View>
-        <Text style={[text.hudJapanese, { marginTop: spacing.sm }]}>出 席</Text>
-        <Text style={[text.hudTitle, { marginTop: 4 }]}>SHUSSEKI</Text>
-        <Text style={[text.hudSub, { marginTop: spacing.sm }]}>
-          ROOM-LEVEL CONTINUOUS ATTENDANCE · BLE+WIFI+ULTRASONIC FUSION
+        <Text style={[text.tiny, { color: colors.dim }]}>
+          DEVICE {DEVICE_ID} · SERVER {settings.serverUrl} · SESS {settings.sessionId} · UPTIME {mm}:{ss}
         </Text>
-        <View style={{ marginTop: spacing.md, gap: 4 }}>
-          <Text style={[text.tiny, { color: colors.dim }]}>DEVICE {DEVICE_ID}</Text>
-          <Text style={[text.tiny, { color: colors.dim }]}>SERVER {settings.serverUrl}</Text>
-          <Text style={[text.tiny, { color: colors.dim }]}>
-            SESSION {settings.sessionId} · ROOM {settings.roomId} · UPTIME {mm}:{ss}
-          </Text>
-        </View>
       </View>
       <Hazard height={10} a={colors.purple} />
 
-      <Panel title="OPERATIONS / 作戦選択" tone={colors.purple} accentLabel="SELECT MISSION">
-        <View style={styles.grid}>
-          <ModeTile
-            jp="送信"
-            en="SOSHIN (ROOM)"
-            sub="hotspot + beacon + chirp"
-            tone={colors.purple}
-            onPress={() => onPick("soshin")}
-          />
-          <ModeTile
-            jp="受信"
-            en="JUSHIN (PHONE)"
-            sub="sense + report + verdict"
-            tone={colors.green}
-            onPress={() => onPick("jushin")}
-          />
-          <ModeTile
-            jp="診断"
-            en="SMOKE"
-            sub="per-modality self-test"
-            tone={colors.amber}
-            onPress={() => onPick("smoke")}
-          />
-          <ModeTile
-            jp="試験"
-            en="E2E FULL TEST"
-            sub="auto both-role trial"
-            tone={colors.red}
-            onPress={() =>
-              onPick("e2e", { screen: "e2e", role: "both" })
-            }
-          />
-        </View>
-      </Panel>
+      <View style={styles.missionRow}>
+        <MissionTile
+          jp="送信"
+          en="SOSHIN"
+          sub="ROOM TRANSMITTER · 部屋送信機"
+          tone={colors.purple}
+          onPress={() => onPick("soshin")}
+        />
+        <MissionTile
+          jp="受信"
+          en="JUSHIN"
+          sub="PHONE RECEIVER · 端末受信機"
+          tone={colors.green}
+          onPress={() => onPick("jushin")}
+        />
+        <MissionTile
+          jp="診断"
+          en="SMOKE"
+          sub="DIAGNOSTICS · 自己診断"
+          tone={colors.amber}
+          onPress={() => onPick("smoke")}
+        />
+        <MissionTile
+          jp="試験"
+          en="E2E TEST"
+          sub="FULL TRIAL · 総合試験"
+          tone={colors.red}
+          onPress={() => onPick("e2e", { screen: "e2e", role: "both" })}
+        />
+      </View>
 
       <SettingsPanel settings={settings} onChange={onSettingsChange} />
 
       <Divider label="TROUBLESHOOT" />
-      <Text style={[text.tiny, { color: colors.faint, lineHeight: 16 }]}>
-        adb reverse tcp:8787 tcp:8787{'\n'}
-        server: cd server && npm run dev{'\n'}
-        smoke deep-link: shusseki://smoke?run=all{'\n'}
-        e2e deep-link: shusseki://e2e?role=both
+      <Text style={[text.tiny, { color: colors.faint, lineHeight: 15 }]}>
+        adb reverse tcp:8787 tcp:8787 · server: cd server && npm run dev · shusseki://smoke?run=all · shusseki://e2e?role=both
       </Text>
     </ScrollView>
   );
 }
 
-function ModeTile({
+function MissionTile({
   jp,
   en,
   sub,
@@ -240,10 +249,12 @@ function ModeTile({
 }) {
   return (
     <HudButton variant="ghost" onPress={onPress} style={[styles.tile, style]}>
-      <Text style={[text.hudJapanese, { fontSize: 24, color: tone }]}>{jp}</Text>
-      <Text style={[text.section, { color: colors.text, marginTop: 4 }]}>{en}</Text>
-      <Text style={[text.tiny, { color: colors.dim, marginTop: 2 }]}>{sub}</Text>
-      <Text style={[text.value, { color: tone, marginTop: 6, letterSpacing: 2 }]}>▶ ENGAGE</Text>
+      <Text style={[text.hudJapanese, { fontSize: 34, color: tone }]}>{jp}</Text>
+      <Text style={[{ fontFamily: DEPARTURE, fontSize: 16, letterSpacing: 1, color: colors.text, marginTop: 4 }]}>{en}</Text>
+      <Text style={[text.tiny, { color: colors.dim, marginTop: 3 }]}>{sub}</Text>
+      <Text style={[text.value, { color: tone, fontSize: 13, marginTop: 8, letterSpacing: 3, fontWeight: "800" }]}>
+        ▶ ENGAGE
+      </Text>
     </HudButton>
   );
 }
@@ -288,7 +299,7 @@ function SettingsPanel({
       )}
       {!open && (
         <Text style={[text.tiny, { color: colors.faint }]}>
-          room={settings.roomId} · session={settings.sessionId} · ssid={settings.soshinSsid}
+          room={settings.roomId} · session={settings.sessionId} · ssid={settings.soshinSsid} · secret={settings.secret}
         </Text>
       )}
     </Panel>
@@ -323,25 +334,32 @@ function Field({
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg },
-  shell: { padding: spacing.md, gap: spacing.md },
+  shell: { flex: 1, backgroundColor: colors.bg, padding: spacing.md, gap: spacing.md },
   home: { paddingBottom: spacing.xxl, backgroundColor: colors.bg },
   masthead: {
     paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.md,
+    paddingVertical: spacing.sm,
     backgroundColor: colors.bgRaised,
     borderLeftWidth: 1,
     borderRightWidth: 1,
     borderColor: colors.line,
+    gap: spacing.xs,
+    overflow: "hidden",
   },
-  grid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.md },
+  missionRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.sm,
+    paddingVertical: spacing.sm,
+  },
   tile: {
-    flex: 1,
-    minWidth: "46%",
+    flexGrow: 1,
+    flexBasis: "40%",
+    minHeight: 108,
     alignItems: "flex-start",
+    justifyContent: "center",
     flexDirection: "column",
     padding: spacing.md,
-    backgroundColor: colors.bgRaised,
-    borderColor: colors.lineStrong,
   },
   input: {
     borderWidth: 1,

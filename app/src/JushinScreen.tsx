@@ -18,16 +18,27 @@ import { DEVICE_ID } from "./identity";
 import { VERSION } from "./version";
 import { colors, MONO, spacing, text } from "./theme";
 import {
+  AlertOverlay,
+  BloomField,
   ConsoleHeader,
   Divider,
   HudButton,
+  Interjection,
+  Lamp,
   Meter,
   Panel,
   RawJson,
-  StatusDot,
   ValueRow,
-  toneFor,
 } from "./components/hud";
+
+/** One full-screen console alert. */
+interface ConsoleAlert {
+  title: string;
+  jp?: string;
+  sub?: string;
+  detail?: string;
+  tone: string;
+}
 
 const TICK_MS = 5000;
 
@@ -61,9 +72,11 @@ export default function JushinScreen({
   const [ticks, setTicks] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
+  const [alert, setAlert] = useState<ConsoleAlert | null>(null);
   const controllerRef = useRef<JushinController | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const busyRef = useRef(false);
+  const prevVerdictRef = useRef<boolean | null>(null);
 
   const { devices } = useSessionPresence(serverUrl, settings.sessionId, running);
 
@@ -93,6 +106,7 @@ export default function JushinScreen({
       controllerRef.current = controller;
       setRunning(true);
       setStartedAt(Date.now());
+      prevVerdictRef.current = null;
 
       const loop = async () => {
         if (busyRef.current) return;
@@ -103,9 +117,41 @@ export default function JushinScreen({
           setLastResult(controller.lastReportResult);
           setTicks((n) => n + 1);
           setLocal(computeLocal(report));
+
+          // Verdict flip → slam the console alert (PATTERN GREEN / TARGET LOST).
+          const v = controller.lastReportResult?.presence?.present ?? null;
+          const prev = prevVerdictRef.current;
+          prevVerdictRef.current = v;
+          if (v !== null && prev !== null && v !== prev) {
+            setAlert(
+              v
+                ? {
+                    title: "RECOGNIZED",
+                    jp: "認識完了",
+                    sub: "PATTERN GREEN · UNIT PRESENCE CONFIRMED",
+                    detail: `fused=${controller.lastReportResult?.presence?.fused.toFixed(3)} · ultrasonicServerValid=${controller.lastReportResult?.presence?.ultrasonicServerValid}`,
+                    tone: colors.green,
+                  }
+                : {
+                    title: "TARGET LOST",
+                    jp: "標的喪失",
+                    sub: "PATTERN RED · UNIT PRESENCE NOT CONFIRMED",
+                    detail: `fused=${controller.lastReportResult?.presence?.fused.toFixed(3)}`,
+                    tone: colors.red,
+                  },
+            );
+          }
         } catch (e) {
           console.warn("[jushin] tick failed:", e);
-          setError(e instanceof Error ? e.message : String(e));
+          const msg = e instanceof Error ? e.message : String(e);
+          setError(msg);
+          setAlert({
+            title: "SENSOR FAULT",
+            jp: "機器異常",
+            sub: "SYNC CYCLE INTERRUPTED — CHECK MAGI LINK",
+            detail: msg,
+            tone: colors.red,
+          });
         } finally {
           busyRef.current = false;
         }
@@ -141,9 +187,11 @@ export default function JushinScreen({
   const uptime = startedAt ? Math.round((Date.now() - startedAt) / 1000) : 0;
   const sp = lastResult?.presence ?? null;
   const rtt = lastResult?.rttMs ?? null;
+  const verdict = sp?.present;
 
   return (
     <View style={styles.root}>
+      <BloomField a={colors.green} b={colors.cyan} />
       <ConsoleHeader
         jp="受信"
         en="JUSHIN-LINK · PHONE RECEIVER"
@@ -152,164 +200,221 @@ export default function JushinScreen({
         right={<Text style={[text.tiny, { letterSpacing: 2 }]}>{VERSION}</Text>}
       />
       <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.scroll}>
-        {/* 生体認証 — biometric boundary check */}
-        <Panel title="BIOMETRIC / 生体認証" tone={colors.amber} accentLabel="ANTI-SPOOF">
-          <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm }}>
-            <StatusDot tone={bioOk == null ? colors.dim : bioOk ? colors.green : colors.red} pulse={running && bioOk === true} />
-            <Text style={[text.value, { color: bioOk == null ? colors.dim : bioOk ? colors.green : colors.red }]}>
-              {bio}
-            </Text>
-          </View>
-        </Panel>
+        <View style={styles.cols}>
+          <View style={styles.colA}>
+            {/* 認識 plate — the big typographic interjection */}
+            <Interjection
+              text={verdict == null ? (running ? "SCANNING" : "STANDBY") : verdict ? "RECOGNIZED" : "ABSENT"}
+              sub={
+                verdict == null
+                  ? running ? "AWAITING SYNC" : "ENGAGE TO BEGIN"
+                  : sp!.fused >= 0.5 ? `AT-FIELD CONFIRMED · ${sp!.fused.toFixed(2)}` : `AT-FIELD WEAK · ${sp!.fused.toFixed(2)}`
+              }
+              tone={verdict == null ? (running ? colors.amber : colors.dim) : verdict ? colors.green : colors.red}
+              plate={verdict == null ? false : true}
+            />
 
-        {/* 信号 — raw modalities + on-device fusion */}
-        <Panel title="MODALITIES / 信号" tone={colors.purple} accentLabel="LOCAL FUSION" right={<StatusDot tone={running ? colors.green : colors.dim} pulse={running} />}>
-          {!lastReport ? (
-            <Text style={[text.tiny, { color: colors.faint }]}>
-              No observations yet. Set Soshin SSID/pass in settings, then ENGAGE.
-            </Text>
-          ) : (
-            <>
-              <Divider label="BLE" />
-              <ValueRow k="nodes" v={`${lastReport.ble?.readings.length ?? 0} seen`} />
-              {lastReport.ble?.readings.map((r) => (
-                <ValueRow
-                  key={r.nodeId}
-                  k={`  ${r.nodeId}`}
-                  v={`${r.rssi} dBm${r.code ? " · code" : ""}`}
-                  tone={r.rssi > -70 ? colors.green : colors.amber}
-                />
-              ))}
-              {local?.ble != null && <Meter label="BLE confidence" value={local.ble} />}
-
-              <Divider label="WIFI" />
-              <ValueRow
-                k="connected"
-                v={String(lastReport.wifi?.connectedToSoshin ?? "?")}
-                tone={lastReport.wifi?.connectedToSoshin ? colors.green : colors.red}
-              />
-              <ValueRow k="ssid" v={lastReport.wifi?.ssid ?? "—"} />
-              <ValueRow k="bssid" v={lastReport.wifi?.bssid ?? "—"} />
-              <ValueRow
-                k="rssi"
-                v={lastReport.wifi?.soshinRssi != null && !Number.isNaN(lastReport.wifi.soshinRssi) ? `${lastReport.wifi.soshinRssi} dBm` : "—"}
-                tone={lastReport.wifi?.soshinRssi != null && !Number.isNaN(lastReport.wifi.soshinRssi) ? (lastReport.wifi.soshinRssi > -65 ? colors.green : colors.amber) : colors.dim}
-              />
-              {local?.wifi != null && <Meter label="WiFi confidence" value={local.wifi} />}
-
-              <Divider label="ULTRASONIC" />
-              <ValueRow
-                k="received"
-                v={String(lastReport.ultrasonic?.received ?? "?")}
-                tone={lastReport.ultrasonic?.received ? colors.green : colors.red}
-              />
-              <ValueRow
-                k="server-valid"
-                v={sp?.ultrasonicServerValid == null ? "—" : String(sp.ultrasonicServerValid)}
-                tone={sp?.ultrasonicServerValid ? colors.green : colors.red}
-              />
-              <ValueRow
-                k="snr"
-                v={lastReport.ultrasonic?.snr != null ? String(lastReport.ultrasonic?.snr.toFixed(1)) : "—"}
-              />
-              <ValueRow k="miss" v={lastReport.ultrasonic?.missReason ?? "none"} tone={lastReport.ultrasonic?.missReason ? colors.amber : colors.dim} />
-              {local?.ultrasonic != null && <Meter label="Ultrasonic confidence" value={local.ultrasonic} />}
-
-              <Divider label="FUSED (device-side)" />
-              {local && (
+            {/* AT-FIELD — device-side fused confidence */}
+            <Panel title="AT-FIELD / 絶対領域" tone={colors.purple} accentLabel="DEVICE FUSION" grid>
+              {local ? (
                 <>
-                  <Meter label="fused confidence" value={local.fused} height={10} />
+                  <Meter label="AT-FIELD STRENGTH" value={local.fused} height={12} />
                   <ValueRow
                     k="verdict"
-                    v={local.present ? "PRESENT" : "ABSENT"}
+                    v={local.present ? "IN-SYNC" : "LOST"}
                     tone={local.present ? colors.green : colors.red}
                   />
+                  <ValueRow k="report #" v={String(ticks)} />
+                  <ValueRow k="uptime" v={fmtClock(uptime)} />
                 </>
+              ) : (
+                <Text style={[text.tiny, { color: colors.faint }]}>
+                  No telemetry yet — ENGAGE to begin sync.
+                </Text>
               )}
-            </>
-          )}
-        </Panel>
+            </Panel>
 
-        {/* 融合サーバ — server round-trip verdict */}
-        <Panel title="FUSION SERVER / 融合サーバ" tone={colors.cyan} accentLabel={`${ticks} REPORT(S)`}>
-          <ValueRow k="last ingest" v={lastResult ? `sent · rtt ${rtt}ms` : "—"} tone={rtt != null && rtt > 1500 ? colors.amber : colors.green} />
-          <ValueRow k="at" v={lastReport ? fmtTime(lastReport.timestamp) : "—"} />
-          {sp ? (
-            <>
-              <Divider label="SERVER VERDICT" />
-              <View style={{ flexDirection: "row", alignItems: "baseline", gap: spacing.sm }}>
-                <Text style={text.label}>presence</Text>
-                <Text
-                  style={[
-                    text.big,
-                    {
-                      color: sp.present ? colors.green : colors.red,
-                      textShadowColor: sp.present ? colors.green : colors.red,
-                      textShadowRadius: 8,
-                    },
-                  ]}
-                >
-                  {sp.present ? "◆ RECOGNIZED" : "◇ ABSENT"}
+            {/* BIOMETRIC — the entry-plug occupant check */}
+            <Panel title="OCCUPANT / 搭乗者検証" tone={colors.amber} accentLabel="ANTI-SPOOF">
+              <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm }}>
+                <Lamp tone={bioOk == null ? colors.dim : bioOk ? colors.green : colors.red} size={7} />
+                <Text style={[text.value, { color: bioOk == null ? colors.dim : bioOk ? colors.green : colors.red }]}>
+                  {bio}
                 </Text>
               </View>
-              <ValueRow
-                k="fused"
-                v={`${sp.fused.toFixed(3)}${sp.fused >= 0.5 ? " ≥" : " <"} 0.5`}
-                tone={toneFor(sp.fused)}
-              />
-              {sp.confidences.ble != null && (
-                <Meter label="  server BLE" value={sp.confidences.ble} />
-              )}
-              {sp.confidences.wifi != null && (
-                <Meter label="  server WiFi" value={sp.confidences.wifi} />
-              )}
-              {sp.confidences.ultrasonic != null && (
-                <Meter label="  server Ultrasonic" value={sp.confidences.ultrasonic} />
-              )}
-            </>
-          ) : (
-            <Text style={[text.tiny, { color: colors.faint }]}>
-              No server verdict yet — start attendance.
-            </Text>
-          )}
-          <RawJson data={sp} label="SERVER RESPONSE" />
-          <RawJson data={lastReport} label="REPORT PAYLOAD" />
-        </Panel>
+            </Panel>
 
-        {/* 部屋監視 — every device in the room */}
-        <Panel title="ROOM MONITOR / 部屋監視" tone={colors.green} accentLabel={`${devices.length} DEVICE(S)`}>
-          {devices.length === 0 ? (
-            <Text style={[text.tiny, { color: colors.faint }]}>
-              No devices reported yet. Start attendance; the room-side Soshin will
-              appear here too when it broadcasts.
-            </Text>
-          ) : (
-            devices.map((d: ServerPresence) => (
-              <ValueRow
-                key={d.deviceId}
-                k={`${d.present ? "●" : "○"} ${d.deviceId}${d.deviceId === DEVICE_ID ? " (ME)" : ""}`}
-                v={`${d.mode} fused=${d.fused.toFixed(2)}${d.ultrasonicServerValid ? " code✓" : ""}`}
-                tone={d.present ? colors.green : colors.red}
-              />
-            ))
-          )}
-        </Panel>
+            <View style={styles.controls}>
+              {!running ? (
+                <HudButton variant="primary" title="UNIT-01 ENGAGE" onPress={start} />
+              ) : (
+                <HudButton variant="danger" title="DISENGAGE" onPress={stop} />
+              )}
+              <HudButton variant="ghost" title="EXIT" onPress={onExit} />
+            </View>
+          </View>
+
+          <View style={styles.colB}>
+            {/* 信号 — the three sync rates, raw values + device-side confidence */}
+            <Panel
+              title="SYNC RATES / 信号"
+              tone={colors.purple}
+              accentLabel="PER-MODALITY"
+              right={<Lamp tone={running ? colors.green : colors.dim} size={6} />}
+            >
+              {!lastReport ? (
+                <Text style={[text.tiny, { color: colors.faint }]}>
+                  No observations yet. Set Soshin SSID/pass in CONFIG, then ENGAGE.
+                </Text>
+              ) : (
+                <View style={styles.syncRow}>
+                  <View style={{ flex: 1, gap: spacing.sm }}>
+                    <Divider label="BLE" />
+                    <ValueRow k="nodes" v={`${lastReport.ble?.readings.length ?? 0} seen`} labelWidth={64} />
+                    {lastReport.ble?.readings.map((r) => (
+                      <ValueRow
+                        key={r.nodeId}
+                        k={`  ${r.nodeId}`}
+                        v={`${r.rssi} dBm${r.code ? " · code" : ""}`}
+                        tone={r.rssi > -70 ? colors.green : colors.amber}
+                        labelWidth={64}
+                      />
+                    ))}
+                    {local?.ble != null && <Meter label="SYNC RATE · BLE" value={local.ble} />}
+                  </View>
+                  <View style={{ flex: 1, gap: spacing.sm }}>
+                    <Divider label="WIFI" />
+                    <ValueRow
+                      k="conn"
+                      v={String(lastReport.wifi?.connectedToSoshin ?? "?")}
+                      tone={lastReport.wifi?.connectedToSoshin ? colors.green : colors.red}
+                      labelWidth={64}
+                    />
+                    <ValueRow k="ssid" v={lastReport.wifi?.ssid ?? "—"} labelWidth={64} />
+                    <ValueRow k="bssid" v={lastReport.wifi?.bssid ?? "—"} labelWidth={64} />
+                    <ValueRow
+                      k="rssi"
+                      v={lastReport.wifi?.soshinRssi != null && !Number.isNaN(lastReport.wifi.soshinRssi) ? `${lastReport.wifi.soshinRssi} dBm` : "—"}
+                      tone={lastReport.wifi?.soshinRssi != null && !Number.isNaN(lastReport.wifi.soshinRssi) ? (lastReport.wifi.soshinRssi > -65 ? colors.green : colors.amber) : colors.dim}
+                      labelWidth={64}
+                    />
+                    {local?.wifi != null && <Meter label="SYNC RATE · WIFI" value={local.wifi} />}
+                  </View>
+                  <View style={{ flex: 1, gap: spacing.sm }}>
+                    <Divider label="ULTRA" />
+                    <ValueRow
+                      k="rx"
+                      v={String(lastReport.ultrasonic?.received ?? "?")}
+                      tone={lastReport.ultrasonic?.received ? colors.green : colors.red}
+                      labelWidth={64}
+                    />
+                    <ValueRow
+                      k="sv"
+                      v={sp?.ultrasonicServerValid == null ? "—" : String(sp.ultrasonicServerValid)}
+                      tone={sp?.ultrasonicServerValid ? colors.green : colors.red}
+                      labelWidth={64}
+                    />
+                    <ValueRow
+                      k="snr"
+                      v={lastReport.ultrasonic?.snr != null ? String(lastReport.ultrasonic?.snr.toFixed(1)) : "—"}
+                      labelWidth={64}
+                    />
+                    <ValueRow
+                      k="miss"
+                      v={lastReport.ultrasonic?.missReason ?? "none"}
+                      tone={lastReport.ultrasonic?.missReason ? colors.amber : colors.dim}
+                      labelWidth={64}
+                    />
+                    {local?.ultrasonic != null && <Meter label="SYNC RATE · ULTRA" value={local.ultrasonic} />}
+                  </View>
+                </View>
+              )}
+            </Panel>
+
+            {/* MAGI — the server verdict */}
+            <Panel title="MAGI / 融合サーバ" tone={colors.cyan} accentLabel={`${ticks} REPORT(S)`}>
+              <View style={styles.syncRow}>
+                <View style={{ flex: 1, gap: spacing.sm }}>
+                  <ValueRow
+                    k="ingest"
+                    v={lastResult ? `sent · rtt ${rtt}ms` : "—"}
+                    tone={rtt != null && rtt > 1500 ? colors.amber : colors.green}
+                    labelWidth={72}
+                  />
+                  <ValueRow k="at" v={lastReport ? fmtTime(lastReport.timestamp) : "—"} labelWidth={72} />
+                  {!sp && (
+                    <Text style={[text.tiny, { color: colors.faint }]}>
+                      No server verdict yet — ENGAGE.
+                    </Text>
+                  )}
+                </View>
+                <View style={{ flex: 2, gap: spacing.sm }}>
+                  {sp && (
+                    <>
+                      <Meter label="FUSED (SERVER)" value={sp.fused} height={10} />
+                      {sp.confidences.ble != null && <Meter label="SYNC BLE" value={sp.confidences.ble} />}
+                      {sp.confidences.wifi != null && <Meter label="SYNC WIFI" value={sp.confidences.wifi} />}
+                      {sp.confidences.ultrasonic != null && (
+                        <Meter label="SYNC ULTRA" value={sp.confidences.ultrasonic} />
+                      )}
+                    </>
+                  )}
+                </View>
+              </View>
+              <RawJson data={sp} label="MAGI RESPONSE" />
+              <RawJson data={lastReport} label="REPORT PAYLOAD" />
+            </Panel>
+
+            {/* 部屋監視 — every unit in the room; tap a row for its full verdict */}
+            <Panel title="ROOM MONITOR / 部屋監視" tone={colors.green} accentLabel={`${devices.length} UNIT(S)`} grid>
+              {devices.length === 0 ? (
+                <Text style={[text.tiny, { color: colors.faint }]}>
+                  No devices reported yet. Start attendance; the room-side Soshin
+                  will appear here too when it broadcasts.
+                </Text>
+              ) : (
+                devices.map((d: ServerPresence) => (
+                  <ValueRow
+                    key={d.deviceId}
+                    k={`${d.present ? "●" : "○"} ${d.deviceId}${d.deviceId === DEVICE_ID ? " (ME)" : ""}`}
+                    v={`${d.mode} fused=${d.fused.toFixed(2)}${d.ultrasonicServerValid ? " code✓" : ""}`}
+                    tone={d.present ? colors.green : colors.red}
+                    onPress={() =>
+                      setAlert({
+                        title: d.present ? "UNIT ACTIVE" : "UNIT INACTIVE",
+                        jp: "個機状態",
+                        sub: `${d.deviceId} · ${d.mode.toUpperCase()} · SYNC DATA`,
+                        detail: JSON.stringify(d, null, 2),
+                        tone: d.present ? colors.green : colors.red,
+                      })
+                    }
+                  />
+                ))
+              )}
+            </Panel>
+          </View>
+        </View>
 
         {error && (
-          <Panel title="FAULT / 異常" tone={colors.red} accentLabel="ERROR">
-            <Text style={[text.value, { color: colors.red }]}>{error}</Text>
-          </Panel>
+          <View style={styles.cols}>
+            <Panel title="FAULT / 異常" tone={colors.red} accentLabel="ERROR">
+              <Text style={[text.value, { color: colors.red }]}>{error}</Text>
+            </Panel>
+          </View>
         )}
-
-        <View style={styles.controls}>
-          {!running ? (
-            <HudButton variant="primary" title="UNIT-01 ENGAGE" onPress={start} />
-          ) : (
-            <HudButton variant="danger" title="DISENGAGE" onPress={stop} />
-          )}
-          <HudButton variant="ghost" title="EXIT" onPress={onExit} />
-        </View>
       </ScrollView>
+
+      {/* Full-screen NERV alert layer — verdict flips, faults, unit introspection */}
+      {alert && (
+        <AlertOverlay
+          title={alert.title}
+          jp={alert.jp}
+          sub={alert.sub}
+          detail={alert.detail}
+          tone={alert.tone}
+          onAck={() => setAlert(null)}
+        />
+      )}
     </View>
   );
 }
@@ -346,6 +451,10 @@ function fmtClock(s: number): string {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg },
-  scroll: { padding: spacing.md, gap: spacing.md },
+  scroll: { padding: spacing.sm, gap: spacing.sm },
+  cols: { flexDirection: "row", flexWrap: "wrap", gap: spacing.md },
+  colA: { flex: 3, gap: spacing.md, minWidth: 300 },
+  colB: { flex: 4, gap: spacing.md, minWidth: 300 },
+  syncRow: { flexDirection: "row", flexWrap: "wrap", gap: spacing.lg },
   controls: { flexDirection: "row", gap: spacing.sm, flexWrap: "wrap" },
 });

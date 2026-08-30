@@ -125,3 +125,30 @@ The app is now a dense NERV-style developer console, not a consumer UI:
   the documented hardware/known items).
 - ✅ Server round-trip over `adb reverse tcp:8787` now completes (server-ping PASS,
   session auto-ensure works, presence pipeline verified server-side).
+
+## P8 — CRT-console restyle pass (session 2026-08-30, part 2)
+Second visual pass, per user direction. Portrait-first, pixel-terminal voice:
+
+- **Font**: bundled **Departure Mono** (OFL, Helena Zhang) via expo-font as the
+  one console face — lo-fi monospaced pixel type at multiples of its native
+  11px grid. All synthetic bolding stripped (single-weight face). Replaced the
+  previous Bebas Neue experiment (wrong vibe).
+- **No grey chrome**: panels are colour-blocked — solid neon tone header bar
+  with black ink, tone-tinted edge (dimFor), corner crop marks, black body.
+  No thin grey outlines anywhere.
+- **Dithering**: unicode shade-block dither bands (`▓▒░` via Dither) as seams
+  under panel headers, around interjections, and in dividers — CRT gradient
+  texture without images. Scanlines retained.
+- **Popups**: full-screen **AlertOverlay** system — state changes slam the
+  screen: Jushin PATTERN GREEN (RECOGNIZED) / PATTERN RED (TARGET LOST) on
+  server-verdict flips, SENSOR FAULT on tick errors, ADVERTISE FAULT on BLE
+  beacon failure (Soshin), TRIAL COMPLETE / TRIAL FAULT (E2E). Room-monitor
+  rows are tappable → UNIT STATUS popup with the full verdict JSON. Acknowledged
+  via `了解 · ACKNOWLEDGE`.
+- **Orientation**: portrait (per user preference — landscape was "not easy to
+  use"; the row layouts now wrap responsively so panels stack in portrait and
+  go 2-up on wide screens).
+- **Landscape**: still supported via flexible wrap (minWidth 300 cols, flexBasis
+  tiles); app.json locked to portrait.
+- Verified on-device v0.1.0+13: Y home console renders with pixel font, E2E
+  completes ("TRIAL COMPLETE" popup + ACK works, maestro `phase: done` intact).

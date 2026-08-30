@@ -5,13 +5,25 @@ import { E2eController, type E2eRole } from "./lib/modes/e2e";
 import type { Settings } from "./settings";
 import { colors, spacing, text } from "./theme";
 import {
+  AlertOverlay,
+  BloomField,
   ConsoleHeader,
   Divider,
   Hazard,
   HudButton,
+  Interjection,
+  Lamp,
   Panel,
-  StatusDot,
 } from "./components/hud";
+
+/** One full-screen console alert. */
+interface ConsoleAlert {
+  title: string;
+  jp?: string;
+  sub?: string;
+  detail?: string;
+  tone: string;
+}
 
 interface ServerE2eEvent {
   sessionId: string;
@@ -43,6 +55,7 @@ export default function E2eScreen({
   const [logLines, setLogLines] = useState<{ t: number; line: string }[]>([]);
   const [remoteEvents, setRemoteEvents] = useState<ServerE2eEvent[]>([]);
   const [serverErr, setServerErr] = useState<string | null>(null);
+  const [alert, setAlert] = useState<ConsoleAlert | null>(null);
   const logRef = useRef<ScrollView | null>(null);
   const cancelledRef = useRef(false);
 
@@ -111,10 +124,26 @@ export default function E2eScreen({
       setPhase("running");
       try {
         await controller.run();
+        if (!cancelledRef.current) {
+          setAlert({
+            title: "TRIAL COMPLETE",
+            jp: "試験完了",
+            sub: "ALL ROLES SELF-REPORTED · SESSION CLOSED",
+            detail: `session=${settings.sessionId} · server=${serverUrl}`,
+            tone: colors.green,
+          });
+        }
       } catch (e) {
         if (!cancelledRef.current) {
           const msg = e instanceof Error ? e.message : String(e);
           log(`[e2e] fatal: ${msg}`);
+          setAlert({
+            title: "TRIAL FAULT",
+            jp: "試験異常",
+            sub: "AUTOMATED SEQUENCE ABORTED",
+            detail: msg,
+            tone: colors.red,
+          });
         }
       }
       if (!cancelledRef.current) setPhase("done");
@@ -130,63 +159,71 @@ export default function E2eScreen({
 
   return (
     <View style={styles.root}>
+      <BloomField a={colors.amber} b={colors.red} />
       <ConsoleHeader
         jp="試験"
         en="E2E-TESTING-MODE · 総合試験"
-        stateLabel={`phase: ${phase}`}
+        stateLabel={`PHASE ${phase.toUpperCase()}`}
         stateTone={done ? colors.green : phase === "running" ? colors.amber : colors.cyan}
         right={<Text style={[text.tiny, { letterSpacing: 2 }]}>role={role}</Text>}
       />
       <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.scroll}>
-        {/* Top summary — this carries the maestro `e2e-summary` testID */}
-        <View style={styles.summaryBox}>
-          <Text testID="e2e-summary" style={[text.glow, { fontSize: 18 }]}>
-            phase: {phase}
-          </Text>
-          <Text style={[text.tiny, { color: colors.dim }]}>
-            role={role} · session={settings.sessionId} · server={serverUrl}
-          </Text>
-        </View>
+        {/* Phase plate — carries the maestro `e2e-summary` contract (phase: done) */}
+        <Interjection
+          text={phase === "done" ? "TRIAL COMPLETE" : phase === "running" ? "TRIAL RUNNING" : "TRIAL STARTING"}
+          sub={phase === "done" ? "BOTH ROLES REPORTED · SESSION CLOSED" : `AUTOMATED SEQUENCE · ${settings.sessionId}`}
+          tone={done ? colors.green : phase === "running" ? colors.amber : colors.cyan}
+          plate={done}
+        />
+        {/* Maestro waits on the literal "phase: done" text — keep it in flow,
+         * rendered in background color (invisible on the black field) but
+         * within bounds so uiautomator treats it as visible. */}
+        <Text testID="e2e-summary" style={styles.hiddenSummary}>
+          phase: {phase}
+        </Text>
 
-        <Panel title="LIVE LOG / 実行記録" tone={colors.purple} accentLabel="LOCAL">
-          <ScrollView
-            ref={logRef}
-            style={styles.log}
-            onContentSizeChange={() => logRef.current?.scrollToEnd({ animated: true })}
+        <View style={styles.cols}>
+          <Panel title="LIVE LOG / 実行記録" tone={colors.purple} accentLabel="LOCAL" style={{ flex: 1, minWidth: 300 }}>
+            <ScrollView
+              ref={logRef}
+              style={styles.log}
+              onContentSizeChange={() => logRef.current?.scrollToEnd({ animated: true })}
+            >
+              {logLines.map((l, i) => (
+                <Text key={i} style={styles.logLine}>
+                  <Text style={{ color: colors.faint }}>{new Date(l.t).toLocaleTimeString()} </Text>
+                  {l.line}
+                </Text>
+              ))}
+            </ScrollView>
+          </Panel>
+
+          <Panel
+            title="SERVER EVENT BUS / サーバ事件"
+            tone={colors.cyan}
+            accentLabel={`${remoteEvents.length} EVENT(S)`}
+            right={<Lamp tone={serverErr ? colors.red : colors.green} size={6} />}
+            style={{ flex: 1, minWidth: 300 }}
           >
-            {logLines.map((l, i) => (
-              <Text key={i} style={styles.logLine}>
-                <Text style={{ color: colors.faint }}>{new Date(l.t).toLocaleTimeString()} </Text>
-                {l.line}
+            {remoteEvents.length === 0 ? (
+              <Text style={[text.tiny, { color: colors.faint }]}>
+                {serverErr ? `Server unreachable: ${serverErr}` : "Waiting for server events…"}
               </Text>
-            ))}
-          </ScrollView>
-        </Panel>
-
-        <Panel
-          title="SERVER EVENT BUS / サーバ事件"
-          tone={colors.cyan}
-          accentLabel={`${remoteEvents.length} EVENT(S)`}
-          right={<StatusDot tone={serverErr ? colors.red : colors.green} pulse={!serverErr} size={6} />}
-        >
-          {remoteEvents.length === 0 ? (
-            <Text style={[text.tiny, { color: colors.faint }]}>
-              {serverErr ? `Server unreachable: ${serverErr}` : "Waiting for server events…"}
-            </Text>
-          ) : (
-            remoteEvents.map((e, i) => (
-              <View key={i} style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm }}>
-                <StatusDot tone={ROLE_TONE[e.role] ?? colors.dim} pulse={false} size={5} />
-                <Text style={[text.tiny, { color: ROLE_TONE[e.role] ?? colors.dim, flex: 1 }]}>
-                  {e.role.toUpperCase()} · {e.phase}
-                </Text>
-                <Text style={[text.tiny, { color: colors.faint }]} numberOfLines={1}>
-                  {e.deviceId}
-                </Text>
-              </View>
-            ))
-          )}
-        </Panel>
+            ) : (
+              remoteEvents.map((e, i) => (
+                <View key={i} style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm }}>
+                  <Lamp tone={ROLE_TONE[e.role] ?? colors.dim} size={5} />
+                  <Text style={[text.tiny, { color: ROLE_TONE[e.role] ?? colors.dim, flex: 1,  }]}>
+                    {e.role.toUpperCase()} · {e.phase}
+                  </Text>
+                  <Text style={[text.tiny, { color: colors.faint }]} numberOfLines={1}>
+                    {e.deviceId}
+                  </Text>
+                </View>
+              ))
+            )}
+          </Panel>
+        </View>
 
         {done && (
           <>
@@ -197,25 +234,36 @@ export default function E2eScreen({
 
         <HudButton variant="ghost" title="EXIT" onPress={onExit} />
       </ScrollView>
+
+      {/* Full-screen NERV alert layer — trial completion/faults */}
+      {alert && (
+        <AlertOverlay
+          title={alert.title}
+          jp={alert.jp}
+          sub={alert.sub}
+          detail={alert.detail}
+          tone={alert.tone}
+          onAck={() => setAlert(null)}
+        />
+      )}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg },
-  scroll: { padding: spacing.md, gap: spacing.md },
-  summaryBox: {
-    borderWidth: 1,
-    borderColor: colors.line,
-    backgroundColor: colors.bgRaised,
-    padding: spacing.md,
-    gap: spacing.xs,
-    borderRadius: 2,
+  scroll: { padding: spacing.sm, gap: spacing.sm },
+  cols: { flexDirection: "row", flexWrap: "wrap", gap: spacing.md },
+  /** In-flow, colored like the field so it's invisible on black but still
+   * "visible" to uiautomator (maestro waits on this exact text). */
+  hiddenSummary: {
+    color: colors.bg,
+    fontFamily: "monospace",
+    fontSize: 8,
   },
   log: {
-    maxHeight: 280,
+    maxHeight: 260,
     backgroundColor: colors.field,
-    borderRadius: 2,
     padding: spacing.sm,
     borderWidth: 1,
     borderColor: colors.line,

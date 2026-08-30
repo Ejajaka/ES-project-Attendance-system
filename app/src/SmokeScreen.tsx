@@ -12,12 +12,14 @@ import { ultraGetPermissionsAsync, ultraLoopback, ultraListen } from "expo-shuss
 import type { Settings } from "./settings";
 import { colors, MONO, spacing, text } from "./theme";
 import {
+  BloomField,
   ConsoleHeader,
-  Divider,
   Hazard,
   HudButton,
+  Interjection,
+  Lamp,
   Panel,
-  StatusDot,
+  Scanlines,
 } from "./components/hud";
 
 type Log = (line: string) => void;
@@ -335,9 +337,11 @@ export default function SmokeScreen({
 
   const passCount = Object.values(statuses).filter((s) => s.startsWith("PASS")).length;
   const failCount = Object.values(statuses).filter((s) => s.startsWith("FAIL")).length;
+  const summaryTone = failCount > 0 ? colors.red : passCount > 0 ? colors.green : colors.dim;
 
   return (
     <View style={styles.root}>
+      <BloomField a={colors.amber} b={colors.green} />
       <ConsoleHeader
         jp="診断"
         en="DIAGNOSTICS · 自己診断"
@@ -345,39 +349,50 @@ export default function SmokeScreen({
         stateTone={failCount > 0 ? colors.red : passCount > 0 ? colors.green : colors.dim}
       />
       <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.scroll}>
-        <View style={styles.summaryBox}>
-          <Text testID="smoke-summary" style={[text.glow, { fontSize: 15 }]}>
+        {/* Suite result plate — carries the maestro smoke-summary contract. */}
+        <View style={[styles.summaryPlate, { borderColor: summaryTone }]}>
+          <Scanlines />
+          <Text testID="smoke-summary" style={[text.interject, { fontSize: 34, color: summaryTone, textAlign: "center" }]}>
             {summary || "NOT RUN / 未実行"}
           </Text>
+          <Text style={[text.interjectSub, { color: colors.dim }]}>DIAGNOSTICS SUITE</Text>
         </View>
 
         <Panel title="CHECKS / 項目" tone={colors.amber} accentLabel="PER-MODALITY">
-          {checksRef.current.map((c) => {
-            const s = statuses[c.id];
-            const state = !s ? "idle" : s.startsWith("PASS") ? "pass" : s.startsWith("FAIL") ? "fail" : "run";
-            return (
-              <View key={c.id} style={styles.checkRow}>
-                <View style={{ flex: 1, gap: 2 }}>
-                  <Text style={[text.value, { color: state === "fail" ? colors.red : state === "pass" ? colors.green : colors.text }]}>
-                    {c.manual ? "[MANUAL] " : ""}{c.label}
-                  </Text>
-                  {s && <Text style={[text.tiny, { color: state === "fail" ? colors.red : state === "pass" ? colors.green : colors.amber }]}>{s}</Text>}
+          <View style={styles.checkGrid}>
+            {checksRef.current.map((c) => {
+              const s = statuses[c.id];
+              const state = !s ? "idle" : s.startsWith("PASS") ? "pass" : s.startsWith("FAIL") ? "fail" : "run";
+              const tone = state === "pass" ? colors.green : state === "fail" ? colors.red : state === "run" ? colors.amber : colors.faint;
+              return (
+                <View key={c.id} style={styles.checkRow}>
+                  <View style={{ flex: 1, gap: 2 }}>
+                    <Text
+                      style={[
+                        text.value,
+                        { color: state === "run" ? colors.amber : colors.text, fontSize: 11 },
+                      ]}
+                    >
+                      {c.manual ? "[MANUAL] " : ""}{c.label}
+                    </Text>
+                    {s && (
+                      <Text style={[text.tiny, { color: tone }]} numberOfLines={2}>
+                        {s}
+                      </Text>
+                    )}
+                  </View>
+                  <Lamp tone={tone} size={6} />
+                  <HudButton
+                    variant={state === "fail" ? "danger" : "ghost"}
+                    small
+                    title={busy ? "…" : "RUN"}
+                    disabled={busy}
+                    onPress={() => runOne(c)}
+                  />
                 </View>
-                <StatusDot
-                  tone={state === "pass" ? colors.green : state === "fail" ? colors.red : state === "run" ? colors.amber : colors.faint}
-                  pulse={state === "run"}
-                  size={6}
-                />
-                <HudButton
-                  variant={state === "fail" ? "danger" : "ghost"}
-                  small
-                  title={busy ? "…" : "RUN"}
-                  disabled={busy}
-                  onPress={() => runOne(c)}
-                />
-              </View>
-            );
-          })}
+              );
+            })}
+          </View>
         </Panel>
 
         <View style={styles.controls}>
@@ -408,13 +423,20 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg },
-  scroll: { padding: spacing.md, gap: spacing.md },
-  summaryBox: {
+  scroll: { padding: spacing.sm, gap: spacing.sm },
+  summaryPlate: {
     borderWidth: 1,
-    borderColor: colors.line,
-    backgroundColor: colors.bgRaised,
-    padding: spacing.md,
-    borderRadius: 2,
+    backgroundColor: colors.field,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.lg,
+    gap: 4,
+    alignItems: "center",
+    overflow: "hidden",
+  },
+  checkGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.sm,
   },
   checkRow: {
     flexDirection: "row",
@@ -423,14 +445,14 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.line,
     backgroundColor: colors.field,
-    borderRadius: 2,
     padding: spacing.sm,
+    flexGrow: 1,
+    flexBasis: 200,
   },
   controls: { flexDirection: "row", gap: spacing.sm, flexWrap: "wrap" },
   log: {
-    maxHeight: 220,
+    maxHeight: 200,
     backgroundColor: colors.field,
-    borderRadius: 2,
     padding: spacing.sm,
     borderWidth: 1,
     borderColor: colors.line,
