@@ -1,41 +1,32 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
-  Button,
   Linking,
-  SafeAreaView,
   ScrollView,
   StatusBar,
   StyleSheet,
   Text,
   TextInput,
   View,
+  type StyleProp,
+  type ViewStyle,
 } from "react-native";
-import { useColorScheme } from "react-native";
-import type { DeviceReport } from "shared";
-import { NativeSensors } from "./lib/nativeSensors";
-import { HttpReporter } from "./lib/reporter";
-import { SoshinController, type SoshinConfig } from "./lib/modes/soshin";
-import { JushinController, type JushinConfig } from "./lib/modes/jushin";
-import { SERVER_URL, DEFAULT_SETTINGS, type Settings } from "./settings";
+import type { E2eRole } from "./lib/modes/e2e";
+import type { Settings } from "./settings";
+import { DEFAULT_SETTINGS } from "./settings";
+import { DEVICE_ID } from "./identity";
+import { VERSION } from "./version";
+import { colors, MONO, radius, spacing, text } from "./theme";
+import {
+  Divider,
+  Hazard,
+  HudButton,
+  Panel,
+  StatusDot,
+} from "./components/hud";
+import SoshinScreen from "./SoshinScreen";
+import JushinScreen from "./JushinScreen";
 import SmokeScreen from "./SmokeScreen";
 import E2eScreen from "./E2eScreen";
-import type { E2eRole } from "./lib/modes/e2e";
-import { VERSION } from "./version";
-
-// Stable-enough device id for the prototype (resets on reinstall).
-// Prefers crypto.randomUUID() when the runtime exposes it, but falls back to a
-// pseudo-random id — Hermes / React Native doesn't always provide a global
-// `crypto` object (it's absent on Android release builds).
-function randomIdPrefix(): string {
-  const g = globalThis as { crypto?: { randomUUID?: () => string } };
-  const uuid = g.crypto?.randomUUID?.();
-  if (uuid) return uuid.slice(0, 8);
-  return (
-    Date.now().toString(36) + Math.random().toString(36).slice(2, 10)
-  ).slice(0, 8);
-}
-
-const DEVICE_ID = `phone-${randomIdPrefix()}`;
 
 type Mode = "none" | "soshin" | "jushin" | "smoke" | "e2e";
 
@@ -62,10 +53,10 @@ function parseLaunch(url: string | null): Launch | null {
 }
 
 export default function App() {
-  const scheme = useColorScheme();
   const [mode, setMode] = useState<Mode>("none");
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [launch, setLaunch] = useState<Launch | null>(null);
+  const [uptime, setUptime] = useState(0);
 
   // Remote/hardware hook: `shusseki://smoke?run=all` or `shusseki://e2e?role=…`
   // boots straight into the automated suite; results stream to logcat.
@@ -82,107 +73,225 @@ export default function App() {
     return () => sub.remove();
   }, []);
 
-  return (
-    <SafeAreaView style={styles.safe}>
-      <StatusBar barStyle={scheme === "dark" ? "light-content" : "dark-content"} />
-      <ScrollView contentContainerStyle={styles.container}>
-        <Text style={styles.title}>Shusseki</Text>
-        <Text style={styles.subtitle}>Room-level continuous attendance</Text>
-        <Text style={styles.device}>device: {DEVICE_ID} · {VERSION}</Text>
+  // Uptime ticker shown on the home console.
+  useEffect(() => {
+    if (mode !== "none") return;
+    setUptime(0);
+    const t = setInterval(() => setUptime((u) => u + 1), 1000);
+    return () => clearInterval(t);
+  }, [mode]);
 
-        {mode === "none" && (
-          <View style={styles.row}>
-            <Button title="Run as Soshin (room)" onPress={() => setMode("soshin")} />
-            <Button title="Run as Jushin (phone)" onPress={() => setMode("jushin")} />
-            <Button title="Smoke tests" onPress={() => setMode("smoke")} />
-            <Button
-              title="E2E test (both)"
-              onPress={() => {
-                setLaunch({ screen: "e2e", role: "both" });
-                setMode("e2e");
+  return (
+    <View style={styles.safe}>
+      <StatusBar barStyle="light-content" backgroundColor={colors.bg} />
+      {mode === "none" ? (
+        <HomeScreen
+          settings={settings}
+          uptime={uptime}
+          onSettingsChange={setSettings}
+          onPick={(m, l) => {
+            setMode(m);
+            setLaunch(l ?? null);
+          }}
+        />
+      ) : (
+        <ScrollView contentContainerStyle={styles.shell}>
+          {mode !== "smoke" && (
+            <SettingsPanel settings={settings} onChange={setSettings} />
+          )}
+          {mode === "soshin" && (
+            <SoshinScreen settings={settings} serverUrl={settings.serverUrl} onExit={() => setMode("none")} />
+          )}
+          {mode === "jushin" && (
+            <JushinScreen settings={settings} serverUrl={settings.serverUrl} onExit={() => setMode("none")} />
+          )}
+          {mode === "smoke" && (
+            <SmokeScreen
+              settings={settings}
+              serverUrl={settings.serverUrl}
+              autoRun={launch?.screen === "smoke" ? launch.autoRun : undefined}
+              onExit={() => {
+                setMode("none");
+                setLaunch(null);
               }}
             />
-          </View>
-        )}
-
-        {mode !== "none" && mode !== "smoke" && (
-          <SettingsForm settings={settings} onChange={setSettings} />
-        )}
-
-        {mode === "soshin" && (
-          <SoshinScreen settings={settings} onExit={() => setMode("none")} />
-        )}
-        {mode === "jushin" && (
-          <JushinScreen settings={settings} onExit={() => setMode("none")} />
-        )}
-        {mode === "smoke" && (
-          <SmokeScreen
-            settings={settings}
-            serverUrl={SERVER_URL}
-            autoRun={launch?.screen === "smoke" ? launch.autoRun : undefined}
-            onExit={() => {
-              setMode("none");
-              setLaunch(null);
-            }}
-          />
-        )}
-        {mode === "e2e" && (
-          <E2eScreen
-            settings={settings}
-            serverUrl={SERVER_URL}
-            role={launch?.screen === "e2e" ? launch.role : "both"}
-            onExit={() => {
-              setMode("none");
-              setLaunch(null);
-            }}
-          />
-        )}
-      </ScrollView>
-    </SafeAreaView>
+          )}
+          {mode === "e2e" && (
+            <E2eScreen
+              settings={settings}
+              serverUrl={settings.serverUrl}
+              role={launch?.screen === "e2e" ? launch.role : "both"}
+              onExit={() => {
+                setMode("none");
+                setLaunch(null);
+              }}
+            />
+          )}
+        </ScrollView>
+      )}
+    </View>
   );
 }
 
-function SettingsForm({
+/* ------------------------------------------------------------------ *
+ * Home — the command console. Target user is a researcher/developer,
+ * so it is a dense technical readout, not a marketing screen.
+ * ------------------------------------------------------------------ */
+function HomeScreen({
+  settings,
+  uptime,
+  onSettingsChange,
+  onPick,
+}: {
+  settings: Settings;
+  uptime: number;
+  onSettingsChange: (s: Settings) => void;
+  onPick: (m: Mode, l?: Launch) => void;
+}) {
+  const mm = Math.floor(uptime / 60).toString().padStart(2, "0");
+  const ss = (uptime % 60).toString().padStart(2, "0");
+  return (
+    <ScrollView style={styles.safe} contentContainerStyle={styles.home}>
+      <Hazard height={10} />
+      <View style={styles.masthead}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm }}>
+          <StatusDot tone={colors.green} pulse />
+          <Text style={[text.hudSub, { letterSpacing: 3 }]}>システム稼働 · SYSTEM ONLINE</Text>
+          <View style={{ flex: 1 }} />
+          <Text style={[text.tiny, { color: colors.dim, letterSpacing: 2 }]}>{VERSION}</Text>
+        </View>
+        <Text style={[text.hudJapanese, { marginTop: spacing.sm }]}>出 席</Text>
+        <Text style={[text.hudTitle, { marginTop: 4 }]}>SHUSSEKI</Text>
+        <Text style={[text.hudSub, { marginTop: spacing.sm }]}>
+          ROOM-LEVEL CONTINUOUS ATTENDANCE · BLE+WIFI+ULTRASONIC FUSION
+        </Text>
+        <View style={{ marginTop: spacing.md, gap: 4 }}>
+          <Text style={[text.tiny, { color: colors.dim }]}>DEVICE {DEVICE_ID}</Text>
+          <Text style={[text.tiny, { color: colors.dim }]}>SERVER {settings.serverUrl}</Text>
+          <Text style={[text.tiny, { color: colors.dim }]}>
+            SESSION {settings.sessionId} · ROOM {settings.roomId} · UPTIME {mm}:{ss}
+          </Text>
+        </View>
+      </View>
+      <Hazard height={10} a={colors.purple} />
+
+      <Panel title="OPERATIONS / 作戦選択" tone={colors.purple} accentLabel="SELECT MISSION">
+        <View style={styles.grid}>
+          <ModeTile
+            jp="送信"
+            en="SOSHIN (ROOM)"
+            sub="hotspot + beacon + chirp"
+            tone={colors.purple}
+            onPress={() => onPick("soshin")}
+          />
+          <ModeTile
+            jp="受信"
+            en="JUSHIN (PHONE)"
+            sub="sense + report + verdict"
+            tone={colors.green}
+            onPress={() => onPick("jushin")}
+          />
+          <ModeTile
+            jp="診断"
+            en="SMOKE"
+            sub="per-modality self-test"
+            tone={colors.amber}
+            onPress={() => onPick("smoke")}
+          />
+          <ModeTile
+            jp="試験"
+            en="E2E FULL TEST"
+            sub="auto both-role trial"
+            tone={colors.red}
+            onPress={() =>
+              onPick("e2e", { screen: "e2e", role: "both" })
+            }
+          />
+        </View>
+      </Panel>
+
+      <SettingsPanel settings={settings} onChange={onSettingsChange} />
+
+      <Divider label="TROUBLESHOOT" />
+      <Text style={[text.tiny, { color: colors.faint, lineHeight: 16 }]}>
+        adb reverse tcp:8787 tcp:8787{'\n'}
+        server: cd server && npm run dev{'\n'}
+        smoke deep-link: shusseki://smoke?run=all{'\n'}
+        e2e deep-link: shusseki://e2e?role=both
+      </Text>
+    </ScrollView>
+  );
+}
+
+function ModeTile({
+  jp,
+  en,
+  sub,
+  tone,
+  onPress,
+  style,
+}: {
+  jp: string;
+  en: string;
+  sub: string;
+  tone: string;
+  onPress: () => void;
+  style?: StyleProp<ViewStyle>;
+}) {
+  return (
+    <HudButton variant="ghost" onPress={onPress} style={[styles.tile, style]}>
+      <Text style={[text.hudJapanese, { fontSize: 24, color: tone }]}>{jp}</Text>
+      <Text style={[text.section, { color: colors.text, marginTop: 4 }]}>{en}</Text>
+      <Text style={[text.tiny, { color: colors.dim, marginTop: 2 }]}>{sub}</Text>
+      <Text style={[text.value, { color: tone, marginTop: 6, letterSpacing: 2 }]}>▶ ENGAGE</Text>
+    </HudButton>
+  );
+}
+
+/* Settings form — HUD-styled, shown only while a mode screen runs. */
+function SettingsPanel({
   settings,
   onChange,
 }: {
   settings: Settings;
   onChange: (s: Settings) => void;
 }) {
+  const [open, setOpen] = useState(false);
   return (
-    <View style={styles.card}>
-      <Field
-        label="Room ID"
-        value={settings.roomId}
-        onChange={(v) => onChange({ ...settings, roomId: v })}
-      />
-      <Field
-        label="Session ID"
-        value={settings.sessionId}
-        onChange={(v) => onChange({ ...settings, sessionId: v })}
-      />
-      <Field
-        label="Soshin SSID"
-        value={settings.soshinSsid}
-        onChange={(v) => onChange({ ...settings, soshinSsid: v })}
-      />
-      <Field
-        label="Soshin hotspot password"
-        value={settings.soshinPass ?? ""}
-        onChange={(v) => onChange({ ...settings, soshinPass: v })}
-        secure
-      />
-      <Field
-        label="Shared secret"
-        value={settings.secret}
-        onChange={(v) => onChange({ ...settings, secret: v })}
-        secure
-      />
-      <Text style={styles.hint}>
-        The Soshin secret must match the one used when creating the server
-        session ({SERVER_URL}/api/sessions).
-      </Text>
-    </View>
+    <Panel
+      title="CONFIG / 設定"
+      tone={colors.amber}
+      accentLabel="SESSION PARAMETERS"
+      right={
+        <HudButton
+          variant="ghost"
+          small
+          title={open ? "COLLAPSE ▲" : "EXPAND ▼"}
+          onPress={() => setOpen((o) => !o)}
+        />
+      }
+    >
+      {open && (
+        <>
+          <Field label="SERVER URL" value={settings.serverUrl} onChange={(v) => onChange({ ...settings, serverUrl: v })} />
+          <Field label="ROOM ID" value={settings.roomId} onChange={(v) => onChange({ ...settings, roomId: v })} />
+          <Field label="SESSION ID" value={settings.sessionId} onChange={(v) => onChange({ ...settings, sessionId: v })} />
+          <Field label="SOSHIN SSID" value={settings.soshinSsid} onChange={(v) => onChange({ ...settings, soshinSsid: v })} />
+          <Field label="HOTSPOT PASS" value={settings.soshinPass ?? ""} onChange={(v) => onChange({ ...settings, soshinPass: v })} secure />
+          <Field label="SHARED SECRET" value={settings.secret} onChange={(v) => onChange({ ...settings, secret: v })} secure />
+          <Text style={[text.tiny, { color: colors.faint, lineHeight: 14 }]}>
+            The Soshin secret must match the one used when creating the server
+            session ({settings.serverUrl}/api/sessions). The server re-verifies
+            the rolling code against it.
+          </Text>
+        </>
+      )}
+      {!open && (
+        <Text style={[text.tiny, { color: colors.faint }]}>
+          room={settings.roomId} · session={settings.sessionId} · ssid={settings.soshinSsid}
+        </Text>
+      )}
+    </Panel>
   );
 }
 
@@ -198,198 +307,51 @@ function Field({
   secure?: boolean;
 }) {
   return (
-    <View style={styles.field}>
-      <Text style={styles.label}>{label}</Text>
+    <View style={{ gap: 4 }}>
+      <Text style={[text.label, { letterSpacing: 2 }]}>{label}</Text>
       <TextInput
         style={styles.input}
         value={value}
         onChangeText={onChange}
         secureTextEntry={secure}
         autoCapitalize="none"
+        placeholderTextColor={colors.faint}
       />
     </View>
   );
 }
 
-function SoshinScreen({
-  settings,
-  onExit,
-}: {
-  settings: Settings;
-  onExit: () => void;
-}) {
-  const [running, setRunning] = useState(false);
-  const [code, setCode] = useState<string | null>(null);
-  const [hotspot, setHotspot] = useState<string | null>(null);
-  const controllerRef = useRef<SoshinController | null>(null);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  const start = async () => {
-    const sensors = new NativeSensors();
-    const config: SoshinConfig = {
-      deviceId: DEVICE_ID,
-      roomId: settings.roomId,
-      sessionId: settings.sessionId,
-      nodeId: DEVICE_ID,
-      secret: new TextEncoder().encode(settings.secret),
-      step: 30,
-    };
-    const controller = new SoshinController(sensors, config);
-    const h = await controller.start();
-    controllerRef.current = controller;
-    setRunning(true);
-    if (h) setHotspot(`"${h.ssid}" pass "${h.passphrase}"`);
-
-    const loop = async () => {
-      const c = await controller.broadcast(Date.now());
-      setCode(c);
-    };
-    await loop();
-    intervalRef.current = setInterval(loop, 30_000);
-  };
-
-  const stop = async () => {
-    if (intervalRef.current) clearInterval(intervalRef.current);
-    intervalRef.current = null;
-    if (controllerRef.current) {
-      try {
-        await controllerRef.current.stop(); // hotspot + BLE beacon teardown
-      } catch (e) {
-        console.warn("[soshin] stop failed:", e);
-      }
-    }
-    controllerRef.current = null;
-    setRunning(false);
-    setCode(null);
-    setHotspot(null);
-  };
-
-  return (
-    <View style={styles.card}>
-      <Text style={styles.modeTitle}>Soshin — room-side</Text>
-      <Text style={styles.body}>
-        Hosts a local WiFi hotspot, advertises a BLE beacon, and broadcasts the
-        ultrasonic rolling code.
-      </Text>
-      {hotspot && <Text style={styles.code}>Hotspot: {hotspot}</Text>}
-      <Text style={styles.code}>Current code: {code ?? "—"}</Text>
-      <View style={styles.row}>
-        {!running ? (
-          <Button title="Start broadcasting" onPress={start} />
-        ) : (
-          <Button title="Stop" onPress={stop} />
-        )}
-        <Button title="Exit" onPress={onExit} />
-      </View>
-    </View>
-  );
-}
-
-function JushinScreen({
-  settings,
-  onExit,
-}: {
-  settings: Settings;
-  onExit: () => void;
-}) {
-  const [running, setRunning] = useState(false);
-  const [lastReport, setLastReport] = useState<DeviceReport | null>(null);
-  const [bio, setBio] = useState<string>("not performed");
-  const controllerRef = useRef<JushinController | null>(null);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  const start = async () => {
-    const sensors = new NativeSensors();
-    const reporter = new HttpReporter(SERVER_URL);
-    const config: JushinConfig = {
-      deviceId: DEVICE_ID,
-      roomId: settings.roomId,
-      sessionId: settings.sessionId,
-      soshinSsid: settings.soshinSsid,
-      soshinPass: settings.soshinPass || undefined,
-    };
-    const controller = new JushinController(sensors, config, reporter);
-    const b = await controller.startAttendance();
-    setBio(`${b.kind} (${b.success ? "ok" : `failed: ${b.reason ?? "unknown"}`})`);
-    controllerRef.current = controller;
-    setRunning(true);
-
-    const loop = async () => {
-      const report = await controller.tick(Date.now());
-      setLastReport(report);
-    };
-    await loop();
-    intervalRef.current = setInterval(loop, 5_000);
-  };
-
-  const stop = async () => {
-    if (intervalRef.current) clearInterval(intervalRef.current);
-    intervalRef.current = null;
-    if (controllerRef.current) await controllerRef.current.endAttendance();
-    setRunning(false);
-  };
-
-  return (
-    <View style={styles.card}>
-      <Text style={styles.modeTitle}>Jushin — phone-side</Text>
-      <Text style={styles.body}>
-        Connects to the Soshin WiFi, listens for the ultrasonic code, reports
-        BLE + WiFi, and sends everything to the server.
-      </Text>
-      <Text style={styles.body}>Biometric: {bio}</Text>
-      {lastReport && (
-        <View style={styles.reportBox}>
-          <Text style={styles.label}>Last report</Text>
-          <Text style={styles.mono}>
-            BLE nodes: {lastReport.ble?.readings.length ?? 0}
-          </Text>
-          <Text style={styles.mono}>
-            WiFi connected: {String(lastReport.wifi?.connectedToSoshin)}
-          </Text>
-          <Text style={styles.mono}>
-            Ultrasonic received: {String(lastReport.ultrasonic?.received)}
-          </Text>
-        </View>
-      )}
-      <View style={styles.row}>
-        {!running ? (
-          <Button title="Start attendance" onPress={start} />
-        ) : (
-          <Button title="End attendance" onPress={stop} />
-        )}
-        <Button title="Exit" onPress={onExit} />
-      </View>
-    </View>
-  );
-}
-
 const styles = StyleSheet.create({
-  safe: { flex: 1 },
-  container: { padding: 16, gap: 12 },
-  title: { fontSize: 28, fontWeight: "700" },
-  subtitle: { fontSize: 14, opacity: 0.7, marginBottom: 8 },
-  device: { fontSize: 12, opacity: 0.5 },
-  row: { flexDirection: "row", gap: 8, flexWrap: "wrap" },
-  card: {
-    borderWidth: 1,
-    borderColor: "#ccc",
-    borderRadius: 12,
-    padding: 16,
-    gap: 10,
+  safe: { flex: 1, backgroundColor: colors.bg },
+  shell: { padding: spacing.md, gap: spacing.md },
+  home: { paddingBottom: spacing.xxl, backgroundColor: colors.bg },
+  masthead: {
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    backgroundColor: colors.bgRaised,
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
+    borderColor: colors.line,
   },
-  modeTitle: { fontSize: 18, fontWeight: "600" },
-  body: { fontSize: 14 },
-  code: { fontSize: 16, fontWeight: "600", fontFamily: "monospace" },
-  hint: { fontSize: 12, opacity: 0.6 },
-  field: { gap: 4 },
-  label: { fontSize: 12, opacity: 0.7 },
+  grid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.md },
+  tile: {
+    flex: 1,
+    minWidth: "46%",
+    alignItems: "flex-start",
+    flexDirection: "column",
+    padding: spacing.md,
+    backgroundColor: colors.bgRaised,
+    borderColor: colors.lineStrong,
+  },
   input: {
     borderWidth: 1,
-    borderColor: "#aaa",
-    borderRadius: 8,
-    padding: 8,
-    fontSize: 14,
+    borderColor: colors.lineStrong,
+    borderRadius: radius.sm,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 8,
+    color: colors.text,
+    fontFamily: MONO,
+    fontSize: 13,
+    backgroundColor: colors.field,
   },
-  reportBox: { gap: 4, backgroundColor: "#f5f5f5", padding: 10, borderRadius: 8 },
-  mono: { fontFamily: "monospace", fontSize: 13 },
 });

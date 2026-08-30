@@ -94,6 +94,17 @@ reports BLE/WiFi). Set `EXPO_PUBLIC_SERVER_URL` to point at the fusion server
 > (Vitest). The native modules (`modules/expo-shusseki-*`) are the only
 > device-dependent code and need a real build to exercise.
 
+### Super-user console (HUD)
+The UI is a dense NERV-style developer console for researchers, not a consumer
+app — every screen dumps raw sensor values, per-modality + fused confidences,
+server verdicts with RTT, roll code state, and a **ROOM MONITOR** that lists
+*every* device currently reporting to the session (so one phone shows the other's
+presence). Japanese labels (送信/受信/診断/試験) mirror the mode roles. The server
+URL is editable on-device (CONFIG panel), so each phone can point at the PC —
+`adb reverse` on USB devices, or the PC's LAN IP for a Wi-Fi phone — without a
+rebuild. Sessions auto-ensure on the server, so no manual `POST /api/sessions`
+step is needed to just run a report loop.
+
 ## Deployment & versioning
 
 Every patch that is deployed to hardware is stamped with a build number from

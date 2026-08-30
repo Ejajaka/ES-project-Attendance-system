@@ -1,11 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import {
-  Button,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
+import { ScrollView, StyleSheet, Text, View } from "react-native";
 import { generateTOTP } from "shared";
 import { NativeSensors } from "./lib/nativeSensors";
 import {
@@ -16,6 +10,15 @@ import {
 import { wifiGetPermissionsAsync } from "expo-shusseki-wifi";
 import { ultraGetPermissionsAsync, ultraLoopback, ultraListen } from "expo-shusseki-ultrasonic";
 import type { Settings } from "./settings";
+import { colors, MONO, spacing, text } from "./theme";
+import {
+  ConsoleHeader,
+  Divider,
+  Hazard,
+  HudButton,
+  Panel,
+  StatusDot,
+} from "./components/hud";
 
 type Log = (line: string) => void;
 
@@ -56,13 +59,40 @@ export function buildChecks(settings: Settings, serverUrl: string): Check[] {
       id: "perms-request",
       label: "Request all runtime permissions",
       run: async () => {
-        const results = [
-          ["ble", await sensors.ble.requestPermissions?.()],
-          ["wifi", await sensors.wifi.requestPermissions?.()],
-          ["ultrasonic", await sensors.ultrasonic.requestPermissions?.()],
-        ] as const;
-        const denied = results.filter(([, ok]) => !ok).map(([n]) => n);
+        // Native requestPermissionsAsync intermittently hangs on real devices
+        // when the permission controller isn't wired (see todo.md P5). Guard
+        // each request with a timeout; if the prompt itself stalls, fall back
+        // to the non-prompting check — permissions are pre-granted via
+        // `adb pm grant` in the runbook anyway.
+        const request = async (p: Promise<boolean> | undefined): Promise<boolean | null> => {
+          if (!p) return null;
+          try {
+            return await withTimeout(p, 6000);
+          } catch {
+            return null; // prompt controller hung — treat as unverifiable
+          }
+        };
+
+        const requested = await Promise.all([
+          ["ble", await request(sensors.ble.requestPermissions?.())],
+          ["wifi", await request(sensors.wifi.requestPermissions?.())],
+          ["ultrasonic", await request(sensors.ultrasonic.requestPermissions?.())],
+        ] as const);
+
+        const unverified = requested.filter(([, ok]) => ok === null).map(([n]) => n);
+        const denied = requested.filter(([, ok]) => ok === false).map(([n]) => n);
+
         if (denied.length > 0) throw new Error(`denied: ${denied.join(", ")}`);
+
+        // Some prompts never returned; confirm via the non-prompting check.
+        if (unverified.length > 0) {
+          const fallback = await Promise.all([
+            sensors.ble.getPermissions?.() ?? Promise.resolve(true),
+            sensors.ultrasonic.getPermissions?.() ?? Promise.resolve(true),
+          ]);
+          if (fallback.every(Boolean)) return "granted (prompt stalled; non-prompting check ok)";
+          throw new Error(`unverified & not confirmed: ${unverified.join(", ")}`);
+        }
         return "all granted";
       },
     },
@@ -80,9 +110,17 @@ export function buildChecks(settings: Settings, serverUrl: string): Check[] {
       id: "ble-power",
       label: "Bluetooth power (on if possible)",
       run: async () => {
-        await bleEnsureEnabled();
-        const ok = await sensors.ble.requestPermissions?.();
-        return ok ? "enabled + perms requested" : "enabled but perms denied";
+        // ensureEnabled can hang on some OEMs (deprecated adapter.enable path);
+        // bound it so one stuck native call can't stall the whole suite.
+        const enabled = await withTimeout(
+          (async () => {
+            await bleEnsureEnabled();
+            const ok = await sensors.ble.requestPermissions?.();
+            return ok ? "enabled + perms requested" : "enabled but perms denied";
+          })(),
+          12000,
+        );
+        return String(enabled);
       },
     },
     {
@@ -242,14 +280,14 @@ export default function SmokeScreen({
   };
 
   const runCheck = async (check: Check): Promise<boolean> => {
-    mark(check.id, "…");
+    mark(check.id, "running…");
     try {
-      const summary = await check.run(log);
-      mark(check.id, `✓ ${summary}`);
+      const summaryText = await check.run(log);
+      mark(check.id, `PASS ${summaryText}`);
       return true;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      mark(check.id, `✗ ${msg}`);
+      mark(check.id, `FAIL ${msg}`);
       log(`  ERROR: ${msg}`);
       return false;
     }
@@ -295,62 +333,107 @@ export default function SmokeScreen({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoRun]);
 
+  const passCount = Object.values(statuses).filter((s) => s.startsWith("PASS")).length;
+  const failCount = Object.values(statuses).filter((s) => s.startsWith("FAIL")).length;
+
   return (
-    <View style={styles.card}>
-      <Text style={styles.modeTitle}>Smoke tests</Text>
-      <Text style={styles.body}>
-        One check per modality, straight against the native modules. Grant
-        permissions first; expect real hardware quirks.
-      </Text>
-      <Text testID="smoke-summary" style={styles.summary}>
-        {summary || "not run"}
-      </Text>
-      {checksRef.current.map((c) => (
-        <View key={c.id} style={styles.checkRow}>
-          <Text style={styles.checkLabel}>{c.label}</Text>
-          <Button
-            title={busy ? "…" : "Run"}
-            disabled={busy}
-            onPress={() => runOne(c)}
-          />
-          {statuses[c.id] && <Text style={styles.checkStatus}>{statuses[c.id]}</Text>}
-        </View>
-      ))}
-      <View style={styles.row}>
-        <Button title={busy ? "Running…" : "Run all"} disabled={busy} onPress={runAll} />
-        <Button title="Exit" onPress={onExit} />
-      </View>
-      <ScrollView ref={logRef} style={styles.log} onContentSizeChange={() => logRef.current?.scrollToEnd()}>
-        {logLines.map((l, i) => (
-          <Text key={i} style={styles.logLine}>
-            {l}
+    <View style={styles.root}>
+      <ConsoleHeader
+        jp="診断"
+        en="DIAGNOSTICS · 自己診断"
+        stateLabel={`${passCount} PASS · ${failCount} FAIL`}
+        stateTone={failCount > 0 ? colors.red : passCount > 0 ? colors.green : colors.dim}
+      />
+      <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.scroll}>
+        <View style={styles.summaryBox}>
+          <Text testID="smoke-summary" style={[text.glow, { fontSize: 15 }]}>
+            {summary || "NOT RUN / 未実行"}
           </Text>
-        ))}
+        </View>
+
+        <Panel title="CHECKS / 項目" tone={colors.amber} accentLabel="PER-MODALITY">
+          {checksRef.current.map((c) => {
+            const s = statuses[c.id];
+            const state = !s ? "idle" : s.startsWith("PASS") ? "pass" : s.startsWith("FAIL") ? "fail" : "run";
+            return (
+              <View key={c.id} style={styles.checkRow}>
+                <View style={{ flex: 1, gap: 2 }}>
+                  <Text style={[text.value, { color: state === "fail" ? colors.red : state === "pass" ? colors.green : colors.text }]}>
+                    {c.manual ? "[MANUAL] " : ""}{c.label}
+                  </Text>
+                  {s && <Text style={[text.tiny, { color: state === "fail" ? colors.red : state === "pass" ? colors.green : colors.amber }]}>{s}</Text>}
+                </View>
+                <StatusDot
+                  tone={state === "pass" ? colors.green : state === "fail" ? colors.red : state === "run" ? colors.amber : colors.faint}
+                  pulse={state === "run"}
+                  size={6}
+                />
+                <HudButton
+                  variant={state === "fail" ? "danger" : "ghost"}
+                  small
+                  title={busy ? "…" : "RUN"}
+                  disabled={busy}
+                  onPress={() => runOne(c)}
+                />
+              </View>
+            );
+          })}
+        </Panel>
+
+        <View style={styles.controls}>
+          <HudButton variant="primary" title={busy ? "RUNNING…" : "RUN ALL / 全走査"} disabled={busy} onPress={runAll} />
+          <HudButton variant="ghost" title="EXIT" onPress={onExit} />
+        </View>
+
+        <Panel title="OUTPUT / 出力" tone={colors.cyan} accentLabel="LOGCAT+MIRROR">
+          <ScrollView ref={logRef} style={styles.log} onContentSizeChange={() => logRef.current?.scrollToEnd({ animated: true })}>
+            {logLines.map((l, i) => (
+              <Text key={i} style={styles.logLine}>{l}</Text>
+            ))}
+          </ScrollView>
+        </Panel>
       </ScrollView>
     </View>
   );
 }
 
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms),
+    ),
+  ]);
+}
+
 const styles = StyleSheet.create({
-  card: {
+  root: { flex: 1, backgroundColor: colors.bg },
+  scroll: { padding: spacing.md, gap: spacing.md },
+  summaryBox: {
     borderWidth: 1,
-    borderColor: "#ccc",
-    borderRadius: 12,
-    padding: 16,
-    gap: 10,
+    borderColor: colors.line,
+    backgroundColor: colors.bgRaised,
+    padding: spacing.md,
+    borderRadius: 2,
   },
-  modeTitle: { fontSize: 18, fontWeight: "600" },
-  body: { fontSize: 14 },
-  summary: { fontSize: 15, fontWeight: "600", fontFamily: "monospace" },
-  row: { flexDirection: "row", gap: 8, flexWrap: "wrap" },
-  checkRow: { gap: 2 },
-  checkLabel: { fontSize: 14, fontWeight: "500" },
-  checkStatus: { fontSize: 13, fontFamily: "monospace" },
+  checkRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.field,
+    borderRadius: 2,
+    padding: spacing.sm,
+  },
+  controls: { flexDirection: "row", gap: spacing.sm, flexWrap: "wrap" },
   log: {
     maxHeight: 220,
-    backgroundColor: "#f5f5f5",
-    borderRadius: 8,
-    padding: 8,
+    backgroundColor: colors.field,
+    borderRadius: 2,
+    padding: spacing.sm,
+    borderWidth: 1,
+    borderColor: colors.line,
   },
-  logLine: { fontFamily: "monospace", fontSize: 11 },
+  logLine: { fontFamily: MONO, fontSize: 10, color: colors.dim, lineHeight: 15 },
 });

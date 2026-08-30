@@ -84,3 +84,44 @@ Verified on **real hardware** (Pixel 8a = Soshin, Galaxy M34 = Jushin, USB adb):
   per patch; version shows on home screen + logcat `[app] version vX.Y.Z+BUILD`.
 - Reliable deploy = self-contained APK (embedded JS, no Metro), verified via the
   version log. Dev-client + Metro remains the fast path but risks stale bundles.
+
+## P7 — Super-user HUD console + hardware fixes (session 2026-08-30)
+The app is now a dense NERV-style developer console, not a consumer UI:
+
+**UI (NGE / Evangelion aesthetic, pure core-RN, no new native deps)**
+- `app/src/theme.ts` — token system (colors/type/spacing/radius) + `components/hud.tsx`
+  primitives: `Panel`, `Meter`, `StatusDot`, `Hazard`, `ValueRow`, `HudButton`,
+  `RawJson`, `ConsoleHeader`. Built per the installed `expo-design-system` skill.
+- Home = command console: 出席 SHUSSEKI masthead, SYSTEM ONLINE lamp, uptime,
+  SERVEr URL, hazard stripes, and 4 mission tiles (送信/受信/診断/試験).
+- Soshin screen: hotspot SSID/pass, live TOTP + countdown, broadcast counter,
+  **BLE advertise result** (the crash fix below), server session state, ROOM MONITOR.
+- Jushin screen: biometric, per-modality raw readings + local confidence meters
+  (BLE/WiFi/ultrasonic via `shared`), fused device-side verdict, **server verdict
+  from the ingest response** (fused + per-modality + rolling-code verification) +
+  RTT, collapsible RAW report/server JSON, and a ROOM MONITOR that lists *every*
+  device in the session (both phones) with their fused confidence — the "see
+  anything/everything" feature.
+- Smoke/E2E screens restyled; **maestro contracts preserved** (`e2e-summary`
+  shows `phase: done`, `smoke-summary` shows `N/M automated passed`).
+- Server URL is now an **on-device setting** (edit in CONFIG); each phone can
+  point at the PC without a rebuild (`adb reverse` => `http://localhost:8787`,
+  or enter the LAN IP for a second phone). Report/room-monitor endpoints get
+  session auto-ensure, so no manual `POST /api/sessions` curl is needed.
+- `HttpReporter.send` now returns the server's `presence` verdict + RTT for the UI.
+
+**Hardware bugs found while E2E-ing two phones (fixed + verified on-device)**
+- ❌→✅ **BLE advertise crash on Pixel 8a**: `ShussekiBleModule.onStartFailure`
+  threw on a binder thread -> whole app killed. Root causes: (1) the beacon payload
+  `room|node|code` overflowed the 31-byte legacy PDU (errorCode 1/`DATA_TOO_LARGE`)
+  on the 30s code refresh; (2) re-advertising without stopping hit
+  `ADVERTISE_FAILED_ALREADY_STARTED`. Fixed: payload is now `node|code` (room is
+  runtime-known to Jushin), refresh does stop→start, and failures resolve to a
+  result map `{ started, errorCode }` instead of an exception. UI shows the result.
+- ❌→✅ **Smoke suite could hang forever** on the intermittent native
+  `requestPermissionsAsync` stall (todo P5). `perms-request` + `ble-power` checks
+  are now bounded by timeouts with a non-prompting `getPermissionsAsync` fallback,
+  so `run=all` always terminates (last run: 7/10 automated passed; the 3 fails are
+  the documented hardware/known items).
+- ✅ Server round-trip over `adb reverse tcp:8787` now completes (server-ping PASS,
+  session auto-ensure works, presence pipeline verified server-side).

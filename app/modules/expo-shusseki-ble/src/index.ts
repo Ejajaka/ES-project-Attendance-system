@@ -7,6 +7,15 @@ export interface NativeBleReading {
   code?: string;
 }
 
+export interface NativeAdvertiseResult {
+  /** True once the AdvertiseCallback reports onStartSuccess. */
+  started: boolean;
+  /** AdvertiseCallback error code (null on success). See BluetoothLeAdvertiser
+   * ADVERTISE_FAILED_* constants: 1=DATA_TOO_LARGE, 2=TOO_MANY_ADVERTISERS,
+   * 3=ALREADY_STARTED, 4=FEATURE_UNSUPPORTED, 5=INTERNAL_ERROR. */
+  errorCode: number | null;
+}
+
 const NativeBle = requireNativeModule("ShussekiBle");
 
 /** Shape of the bundle resolved by expo-modules-core permission requests. */
@@ -22,7 +31,7 @@ export async function bleAdvertise(
   roomId: string,
   nodeId: string,
   code?: string,
-): Promise<void> {
+): Promise<NativeAdvertiseResult> {
   return NativeBle.advertise(roomId, nodeId, code ?? null);
 }
 

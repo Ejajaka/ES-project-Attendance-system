@@ -129,7 +129,13 @@ class ShussekiBleModule : Module() {
     return adapter.isEnabled
   }
 
-  private fun startAdvertising(roomId: String, nodeId: String, code: String?) {
+  /**
+   * Start (or refresh) the room beacon. Waits for the AdvertiseCallback to
+   * settle (success or failure) so the result — not an uncaught exception from
+   * the binder thread — is what the JS side sees. Without this, a transient
+   * advertise failure (e.g. "already started") crashes the whole app.
+   */
+  private fun startAdvertising(roomId: String, nodeId: String, code: String?): Map<String, Any?> {
     val adapter = bluetoothAdapter ?: throw IllegalStateException("Bluetooth unavailable")
     advertiser = adapter.bluetoothLeAdvertiser ?: throw IllegalStateException("LE advertiser unavailable")
 
@@ -139,20 +145,46 @@ class ShussekiBleModule : Module() {
       .setConnectable(false)
       .build()
 
-    // Encode room + node + optional rolling code into manufacturer data.
-    val payload = "$roomId|$nodeId" + (if (!code.isNullOrEmpty()) "|$code" else "")
+    // Encode node + optional rolling code into manufacturer data. Deliberately
+    // compact: legacy advertising PDUs hold 31 bytes total (~4 of which are
+    // the manufacturer header), and "room|node|code" overflows that limit for
+    // realistic node ids + a 6-digit code — a failure that used to crash the
+    // app. The room is already known to Jushin from session settings.
+    val payload = "$nodeId" + (if (!code.isNullOrEmpty()) "|$code" else "")
     val data = AdvertiseData.Builder()
       .setIncludeDeviceName(false)
       .addManufacturerData(0xABCD, payload.toByteArray(Charsets.UTF_8))
       .build()
 
+    val latch = CountDownLatch(1)
+    val failure = intArrayOf(-1) // -1 = pending; errorCode >= 0 = failed
+    val previous = advertiseCallback
     advertiseCallback = object : AdvertiseCallback() {
-      override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {}
+      override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {
+        failure[0] = -1
+        latch.countDown()
+      }
       override fun onStartFailure(errorCode: Int) {
-        throw IllegalStateException("Advertise failed: $errorCode")
+        failure[0] = errorCode
+        latch.countDown()
       }
     }
-    advertiser?.startAdvertising(settings, data, advertiseCallback)
+    try {
+      // Refresh semantics: stop any previous session first so re-advertising
+      // a new rolling code doesn't bounce off ADVERTISE_FAILED_ALREADY_STARTED.
+      if (previous != null) advertiser?.stopAdvertising(previous)
+      advertiser?.startAdvertising(settings, data, advertiseCallback)
+    } catch (e: Exception) {
+      // Some OEMs throw from startAdvertising itself when the radio is busy.
+      failure[0] = -100
+      latch.countDown()
+    }
+    latch.await(3, TimeUnit.SECONDS)
+    val errorCode = failure[0]
+    return mapOf<String, Any?>(
+      "started" to (errorCode < 0),
+      "errorCode" to (if (errorCode >= 0) errorCode else null),
+    )
   }
 
   private fun stopAdvertising() {
@@ -190,12 +222,12 @@ class ShussekiBleModule : Module() {
     return scanResults.mapNotNull { r ->
       val rec = r.scanRecord ?: return@mapNotNull null
       // Shusseki Soshins advertise manufacturer id 0xABCD with payload
-      // "roomId|nodeId|code" — lets Jushin identify its peer and receive the code.
+      // "nodeId|code" — lets Jushin identify its peer and receive the code.
       val mfg = rec.getManufacturerSpecificData(0xABCD) ?: return@mapNotNull null
       val payload = String(mfg, Charsets.UTF_8)
       val parts = payload.split('|')
-      val nodeId = parts.getOrNull(1)?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-      val code = parts.getOrNull(2)?.takeIf { it.isNotBlank() }
+      val nodeId = parts.getOrNull(0)?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+      val code = parts.getOrNull(1)?.takeIf { it.isNotBlank() }
       mapOf(
         "nodeId" to nodeId,
         "rssi" to r.rssi,

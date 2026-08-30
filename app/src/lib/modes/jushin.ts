@@ -1,6 +1,6 @@
 import type { DeviceReport, BiometricCheck } from "shared";
 import type { DeviceSensors } from "../sensors";
-import type { Reporter } from "../reporter";
+import type { Reporter, ReportResult } from "../reporter";
 
 /**
  * Jushin (phone-side) controller. Connects to the Soshin WiFi, listens only for
@@ -19,12 +19,18 @@ export interface JushinConfig {
 export class JushinController {
   private startBio: BiometricCheck | null = null;
   private endBio: BiometricCheck | null = null;
+  private lastResult: ReportResult | null = null;
 
   constructor(
     private sensors: DeviceSensors,
     private config: JushinConfig,
     private reporter: Reporter,
   ) {}
+
+  /** Server verdict (presence + confidences) of the last tick, if any. */
+  get lastReportResult(): ReportResult | null {
+    return this.lastResult;
+  }
 
   /** Biometric at start of attendance, then join the room network + start sensing. */
   async startAttendance(): Promise<BiometricCheck> {
@@ -66,7 +72,7 @@ export class JushinController {
       biometric: this.startBio ?? undefined,
     };
 
-    await this.reporter.send(report);
+    this.lastResult = await this.reporter.send(report);
     return report;
   }
 

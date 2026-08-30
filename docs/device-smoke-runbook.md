@@ -1,10 +1,11 @@
 # Device smoke-test runbook (adb)
 
 Prereqs: USB debugging on, device authorized (`adb devices` shows it).
-Server URL baked into this APK build is `http://10.0.2.2:8787` **only if**
-`EXPO_PUBLIC_SERVER_URL` wasn't set at bundle time — for real-device server
-round-trips rebuild with `EXPO_PUBLIC_SERVER_URL=http://localhost:8787` and use
-step 0b's `adb reverse`.
+Server URL baked into this APK build is `http://localhost:8787` (set via
+`EXPO_PUBLIC_SERVER_URL` at bundle time), paired with step 0b's `adb reverse`.
+You can also change the server URL **in-app** on any device (CONFIG panel →
+SERVER URL), e.g. to a LAN IP for a second phone that isn't on USB. No rebuild
+needed for server changes alone.
 
 ## 0. Install & launch
 ```bash
@@ -19,7 +20,7 @@ adb reverse tcp:8787 tcp:8787
 cd server && npm run dev   # separate terminal
 
 # 0c. confirm the deployed patch on the device
-adb logcat -s ReactNativeJS | grep "\[app\] version"   # expect vX.Y.Z+BUILD
+adb logcat -s ReactNativeJS | grep "\[app\] version"   # expect vX.Y.Z+BUILD (v0.1.0+9 as of this write)
 # (version also shows on the home screen; bump BUILD in app/src/version.ts
 #  every time you ship a change — see README "Deployment & versioning")
 ```

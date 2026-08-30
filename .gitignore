@@ -20,6 +20,11 @@ google-services.json
 !.env.example
 *.pem
 
+# Agent skill tooling (machine-local; re-install via `npx skills experimental_install`)
+.agents/
+.claude/
+agent/
+
 # Logs & OS
 npm-debug.log*
 .DS_Store

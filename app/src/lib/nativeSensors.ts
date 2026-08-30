@@ -17,6 +17,7 @@ import {
   bleScanOnce,
   bleRequestPermissionsAsync,
   bleGetPermissionsAsync,
+  type NativeAdvertiseResult,
 } from "expo-shusseki-ble";
 import {
   wifiConnectSoshin,
@@ -45,10 +46,21 @@ import { bioPerform } from "expo-shusseki-biometric";
  * person. Use the smoke-test screen for raw, unswallowed errors.
  */
 export class NativeSensors implements DeviceSensors {
+  private _lastAdvertise: NativeAdvertiseResult | null = null;
+
+  /** Result of the most recent Soshin BLE advertise call (diagnostics). */
+  get lastAdvertise(): NativeAdvertiseResult | null {
+    return this._lastAdvertise;
+  }
+
   ble: BleAdapter = {
     start: async (mode, opts) => {
       if (mode === "soshin") {
-        await bleAdvertise(opts.roomId, opts.nodeId, opts.code);
+        const r = await bleAdvertise(opts.roomId, opts.nodeId, opts.code);
+        this._lastAdvertise = r;
+        if (!r.started) {
+          console.warn(`[ble] advertise failed errorCode=${r.errorCode}`);
+        }
       }
     },
     stop: async () => {
