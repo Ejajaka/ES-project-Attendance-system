@@ -197,7 +197,12 @@ export default function JushinScreen({
         en="JUSHIN-LINK · PHONE RECEIVER"
         stateLabel={running ? `LINK ACTIVE · ${fmtClock(uptime)}` : "STANDBY"}
         stateTone={running ? colors.green : colors.dim}
-        right={<Text style={[text.tiny, { letterSpacing: 2 }]}>{VERSION}</Text>}
+        right={
+          <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm }}>
+            <Text style={[text.tiny, { letterSpacing: 2 }]}>{VERSION}</Text>
+            <HudButton variant="ghost" small title="EXIT" onPress={onExit} />
+          </View>
+        }
       />
       <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.scroll}>
         <View style={styles.cols}>
@@ -451,10 +456,16 @@ function fmtClock(s: number): string {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg },
-  scroll: { padding: spacing.sm, gap: spacing.sm },
-  cols: { flexDirection: "row", flexWrap: "wrap", gap: spacing.md },
-  colA: { flex: 3, gap: spacing.md, minWidth: 300 },
-  colB: { flex: 4, gap: spacing.md, minWidth: 300 },
+  scroll: { padding: 0, gap: 0 },
+  cols: { flexDirection: "row", flexWrap: "wrap", gap: 0 },
+  colA: { flex: 3, gap: 0, minWidth: 300 },
+  colB: { flex: 4, gap: 0, minWidth: 300 },
   syncRow: { flexDirection: "row", flexWrap: "wrap", gap: spacing.lg },
-  controls: { flexDirection: "row", gap: spacing.sm, flexWrap: "wrap" },
+  controls: {
+    flexDirection: "row",
+    gap: spacing.sm,
+    flexWrap: "wrap",
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.md,
+  },
 });

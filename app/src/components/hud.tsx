@@ -668,7 +668,8 @@ export function Divider({ label, tone = colors.faint }: { label?: string; tone?:
   );
 }
 
-/** Mode-screen top chrome: hazard rails + masthead band + static state lamp. */
+/** Mode-screen top chrome, flush with the console canvas: solid amber + purple
+ * bands (no dotted rails, no box borders) + masthead line + static state lamp. */
 export function ConsoleHeader({
   jp,
   en,
@@ -684,31 +685,28 @@ export function ConsoleHeader({
 }) {
   return (
     <View style={{ gap: 0 }}>
-      <Hazard height={8} />
+      <View style={{ height: 4, backgroundColor: colors.amber }} />
       <View
         style={{
           backgroundColor: colors.bgRaised,
-          borderLeftWidth: 1,
-          borderRightWidth: 1,
-          borderColor: colors.line,
-          paddingHorizontal: spacing.lg,
-          paddingVertical: spacing.sm,
+          paddingHorizontal: spacing.md,
+          paddingVertical: 6,
           flexDirection: "row",
           alignItems: "center",
           gap: spacing.md,
         }}
       >
-        <Text style={[text.hudJapanese, { fontSize: 24, letterSpacing: 4 }]}>{jp}</Text>
-        <View style={{ flex: 1, gap: 2 }}>
-          <Text style={[text.section, { letterSpacing: 4, fontSize: 12 }]}>{en}</Text>
+        <Text style={[text.hudJapanese, { fontSize: 22, letterSpacing: 4 }]}>{jp}</Text>
+        <View style={{ flex: 1, gap: 1 }}>
+          <Text style={[text.section, { letterSpacing: 3, fontSize: 12 }]}>{en}</Text>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
             <Lamp tone={stateTone} size={6} />
-            <Text style={[text.tiny, { letterSpacing: 2, color: stateTone,  }]}>{stateLabel}</Text>
+            <Text style={[text.tiny, { letterSpacing: 2, color: stateTone }]}>{stateLabel}</Text>
           </View>
         </View>
         {right}
       </View>
-      <Hazard height={8} a={colors.purple} />
+      <View style={{ height: 4, backgroundColor: colors.purple }} />
     </View>
   );
 }

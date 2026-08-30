@@ -334,7 +334,7 @@ function Field({
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg },
-  shell: { flex: 1, backgroundColor: colors.bg, padding: spacing.md, gap: spacing.md },
+  shell: { flex: 1, backgroundColor: colors.bg },
   home: { paddingBottom: spacing.xxl, backgroundColor: colors.bg },
   masthead: {
     paddingHorizontal: spacing.lg,

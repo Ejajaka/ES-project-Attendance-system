@@ -195,7 +195,12 @@ export default function SoshinScreen({
         en="SOSHIN-LINK · ROOM TRANSMITTER"
         stateLabel={running ? "OPERATIONAL" : "STANDBY"}
         stateTone={running ? colors.green : colors.dim}
-        right={<Text style={[text.tiny, { letterSpacing: 2 }]}>{VERSION}</Text>}
+        right={
+          <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm }}>
+            <Text style={[text.tiny, { letterSpacing: 2 }]}>{VERSION}</Text>
+            <HudButton variant="ghost" small title="EXIT" onPress={onExit} />
+          </View>
+        }
       />
       <ScrollView contentContainerStyle={styles.scroll} style={{ flex: 1 }}>
         <View style={styles.cols}>
@@ -307,10 +312,10 @@ export default function SoshinScreen({
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg },
-  scroll: { padding: spacing.sm, gap: spacing.sm },
-  cols: { flexDirection: "row", flexWrap: "wrap", gap: spacing.md },
-  colA: { flex: 2, gap: spacing.md, minWidth: 300 },
-  colB: { flex: 3, gap: spacing.md, minWidth: 300 },
+  scroll: { padding: 0, gap: 0 },
+  cols: { flexDirection: "row", flexWrap: "wrap", gap: 0 },
+  colA: { flex: 2, gap: 0, minWidth: 300 },
+  colB: { flex: 3, gap: 0, minWidth: 300 },
   codeBig: {
     fontFamily: MONO,
     fontSize: 26,
@@ -319,5 +324,11 @@ const styles = StyleSheet.create({
     textShadowColor: colors.green,
     textShadowRadius: 8,
   },
-  controls: { flexDirection: "row", gap: spacing.sm, flexWrap: "wrap" },
+  controls: {
+    flexDirection: "row",
+    gap: spacing.sm,
+    flexWrap: "wrap",
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.md,
+  },
 });

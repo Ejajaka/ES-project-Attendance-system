@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { ScrollView, StyleSheet, Text, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { NativeSensors } from "./lib/nativeSensors";
 import { E2eController, type E2eRole } from "./lib/modes/e2e";
 import type { Settings } from "./settings";
@@ -9,7 +9,6 @@ import {
   BloomField,
   ConsoleHeader,
   Divider,
-  Hazard,
   HudButton,
   Interjection,
   Lamp,
@@ -56,6 +55,7 @@ export default function E2eScreen({
   const [remoteEvents, setRemoteEvents] = useState<ServerE2eEvent[]>([]);
   const [serverErr, setServerErr] = useState<string | null>(null);
   const [alert, setAlert] = useState<ConsoleAlert | null>(null);
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const logRef = useRef<ScrollView | null>(null);
   const cancelledRef = useRef(false);
 
@@ -165,7 +165,12 @@ export default function E2eScreen({
         en="E2E-TESTING-MODE · 総合試験"
         stateLabel={`PHASE ${phase.toUpperCase()}`}
         stateTone={done ? colors.green : phase === "running" ? colors.amber : colors.cyan}
-        right={<Text style={[text.tiny, { letterSpacing: 2 }]}>role={role}</Text>}
+        right={
+          <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm }}>
+            <Text style={[text.tiny, { letterSpacing: 2 }]}>role={role}</Text>
+            <HudButton variant="ghost" small title="EXIT" onPress={onExit} />
+          </View>
+        }
       />
       <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.scroll}>
         {/* Phase plate — carries the maestro `e2e-summary` contract (phase: done) */}
@@ -210,29 +215,64 @@ export default function E2eScreen({
                 {serverErr ? `Server unreachable: ${serverErr}` : "Waiting for server events…"}
               </Text>
             ) : (
-              remoteEvents.map((e, i) => (
-                <View key={i} style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm }}>
-                  <Lamp tone={ROLE_TONE[e.role] ?? colors.dim} size={5} />
-                  <Text style={[text.tiny, { color: ROLE_TONE[e.role] ?? colors.dim, flex: 1,  }]}>
-                    {e.role.toUpperCase()} · {e.phase}
-                  </Text>
-                  <Text style={[text.tiny, { color: colors.faint }]} numberOfLines={1}>
-                    {e.deviceId}
-                  </Text>
-                </View>
-              ))
+              <ScrollView style={styles.eventBus} nestedScrollEnabled>
+                {remoteEvents.map((e, i) => {
+                const key = `${e.deviceId}:${i}:${e.at}`;
+                const open = expandedKey === key;
+                const roleTone = ROLE_TONE[e.role] ?? colors.dim;
+                return (
+                  <Pressable
+                    key={key}
+                    onPress={() => setExpandedKey(open ? null : key)}
+                    style={({ pressed }) => ({
+                      borderWidth: 1,
+                      borderColor: open ? roleTone : colors.line,
+                      backgroundColor: open ? "rgba(255,255,255,0.03)" : colors.field,
+                      padding: spacing.xs,
+                      gap: 4,
+                      opacity: pressed ? 0.6 : 1,
+                    })}
+                  >
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm }}>
+                      <Lamp tone={roleTone} size={5} />
+                      <Text style={[text.tiny, { color: roleTone, flex: 1, fontSize: 11 }]}>
+                        {e.role.toUpperCase()} · {e.phase}
+                        {open ? "  ▼" : "  ▶"}
+                      </Text>
+                      <Text style={[text.tiny, { color: colors.faint }]} numberOfLines={1}>
+                        {e.deviceId}
+                      </Text>
+                    </View>
+                    {open && (
+                      <View style={{ gap: 2, paddingLeft: spacing.sm, borderLeftWidth: 2, borderLeftColor: roleTone }}>
+                        <Text style={[text.tiny, { color: colors.faint }]}>
+                          at {new Date(e.at).toLocaleTimeString()} · {e.at}
+                        </Text>
+                        <Text selectable style={[text.tiny, { color: colors.dim, lineHeight: 14 }]}>
+                          {JSON.stringify(e.detail ?? {}, null, 2)}
+                        </Text>
+                      </View>
+                    )}
+                  </Pressable>
+                );
+              })}
+              </ScrollView>
             )}
           </Panel>
         </View>
 
         {done && (
           <>
-            <Hazard height={8} />
-            <Divider label="RUN COMPLETE" />
+            <View style={{ height: 4, backgroundColor: colors.green }} />
+            <View style={{ paddingVertical: spacing.sm }}>
+              <Divider label="RUN COMPLETE" />
+            </View>
           </>
         )}
 
-        <HudButton variant="ghost" title="EXIT" onPress={onExit} />
+        <View style={styles.controls}>
+          <HudButton variant="ghost" title="EXIT" onPress={onExit} />
+        </View>
       </ScrollView>
 
       {/* Full-screen NERV alert layer — trial completion/faults */}
@@ -252,8 +292,15 @@ export default function E2eScreen({
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg },
-  scroll: { padding: spacing.sm, gap: spacing.sm },
-  cols: { flexDirection: "row", flexWrap: "wrap", gap: spacing.md },
+  scroll: { padding: 0, gap: 0 },
+  cols: { flexDirection: "row", flexWrap: "wrap", gap: 0 },
+  controls: {
+    flexDirection: "row",
+    gap: spacing.sm,
+    flexWrap: "wrap",
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.md,
+  },
   /** In-flow, colored like the field so it's invisible on black but still
    * "visible" to uiautomator (maestro waits on this exact text). */
   hiddenSummary: {
@@ -262,9 +309,16 @@ const styles = StyleSheet.create({
     fontSize: 8,
   },
   log: {
-    maxHeight: 260,
+    maxHeight: 190,
     backgroundColor: colors.field,
     padding: spacing.sm,
+    borderWidth: 1,
+    borderColor: colors.line,
+  },
+  eventBus: {
+    maxHeight: 190,
+    backgroundColor: colors.field,
+    padding: spacing.xs,
     borderWidth: 1,
     borderColor: colors.line,
   },

@@ -152,3 +152,26 @@ Second visual pass, per user direction. Portrait-first, pixel-terminal voice:
   tiles); app.json locked to portrait.
 - Verified on-device v0.1.0+13: Y home console renders with pixel font, E2E
   completes ("TRIAL COMPLETE" popup + ACK works, maestro `phase: done` intact).
+
+## P9 — Console-integration pass (session 2026-08-30, part 3)
+User feedback round: "no grey lines", "popups missing", "plastered boxes",
+"checks list too long", "can't see buttons":
+
+- **Flush console canvas**: mode screens (Soshin/Jushin/E2E/Smoke) dropped
+  their outer margins/gaps — panels are now full-bleed bands edge-to-edge,
+  one continuous screen surface. ConsoleHeader hazard "dotted" rails replaced
+  with flat 4px amber/purple bands; header is seamless with the canvas.
+- **Popups with dumps**: smoke checks now report through the full-screen alert
+  (CHECK PASSED / CHECK FAILED + the check's output dump; SUITE COMPLETE +
+  full tail dump + FAILURES list). No inline green status updates on rows;
+  rows are compact (label + RUN only). Summary plate unchanged for maestro.
+- **EXIT always visible**: header EXIT button on every mode screen (top-right,
+  right next to the state); no more hunting below endless lists. Check rows
+  compacted; log panels bounded.
+- **E2E events expandable**: SERVER EVENT BUS rows are tappable — tap to
+  expand in place (▼) revealing timestamp + full JSON detail. Event/log
+  panels are internally scrollable and height-bounded so the phase plate and
+  controls stay visible in portrait.
+- Verified on-device v0.1.0+17: popup-with-dump for single checks and full
+  suite, TRIAL COMPLETE popup, event-row expansion (SOSHIN · transmit ▼ →
+  at-ts + detail), maestro text contracts intact.

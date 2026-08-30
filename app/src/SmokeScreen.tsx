@@ -12,12 +12,11 @@ import { ultraGetPermissionsAsync, ultraLoopback, ultraListen } from "expo-shuss
 import type { Settings } from "./settings";
 import { colors, MONO, spacing, text } from "./theme";
 import {
+  AlertOverlay,
   BloomField,
   ConsoleHeader,
-  Hazard,
+  Divider,
   HudButton,
-  Interjection,
-  Lamp,
   Panel,
   Scanlines,
 } from "./components/hud";
@@ -31,6 +30,15 @@ interface Check {
   run: (log: Log) => Promise<string>;
   /** Requires a human/on-screen interaction; skipped by run=all. */
   manual?: boolean;
+}
+
+/** One full-screen console alert. */
+interface ConsoleAlert {
+  title: string;
+  jp?: string;
+  sub?: string;
+  detail?: string;
+  tone: string;
 }
 
 /**
@@ -262,10 +270,10 @@ export default function SmokeScreen({
   const checksRef = useRef<Check[] | null>(null);
   if (checksRef.current === null) checksRef.current = buildChecks(settings, serverUrl);
 
-  const [statuses, setStatuses] = useState<Record<string, string>>({});
   const [logLines, setLogLines] = useState<string[]>([]);
   const [summary, setSummary] = useState<string>("");
   const [busy, setBusy] = useState(false);
+  const [alert, setAlert] = useState<ConsoleAlert | null>(null);
   const logRef = useRef<ScrollView | null>(null);
 
   // Mirror everything to console so `adb logcat -s ReactNativeJS` captures
@@ -276,68 +284,103 @@ export default function SmokeScreen({
     console.log(`[smoke] ${line}`);
   };
 
-  const mark = (id: string, s: string) => {
-    setStatuses((prev) => ({ ...prev, [id]: s }));
-    console.log(`[smoke] ${id}=${s}`);
+  /** Cap a dump for the alert plate — keep the tail (most recent evidence). */
+  const trimDump = (lines: string[]): string => {
+    const trimmed = lines.slice(-36);
+    const head = lines.length > trimmed.length ? `… ${lines.length - trimmed.length} earlier line(s) trimmed\n` : "";
+    return head + trimmed.join("\n");
   };
 
-  const runCheck = async (check: Check): Promise<boolean> => {
-    mark(check.id, "running…");
-    try {
-      const summaryText = await check.run(log);
-      mark(check.id, `PASS ${summaryText}`);
-      return true;
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      mark(check.id, `FAIL ${msg}`);
-      log(`  ERROR: ${msg}`);
-      return false;
-    }
-  };
-
+  /** One check, one popup: PASS/FAIL with the full output dump. */
   const runOne = async (check: Check) => {
     setBusy(true);
-    const ok = await runCheck(check);
-    setSummary(`${check.id}: ${ok ? "PASS" : "FAIL"} — ${check.label}`);
+    const dump: string[] = [];
+    const cap = (l: string) => {
+      dump.push(l);
+      log(l);
+    };
+    console.log(`[smoke] ▶ ${check.label}`);
+    try {
+      const s = await check.run(cap);
+      setSummary(`${check.id}: PASS — ${check.label}`);
+      setAlert({
+        title: "CHECK PASSED",
+        jp: "項目合格",
+        sub: check.label.toUpperCase(),
+        detail: `RESULT: ${s}\n\nOUTPUT:\n${trimDump(dump)}`,
+        tone: colors.green,
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setSummary(`${check.id}: FAIL — ${check.label}`);
+      setAlert({
+        title: "CHECK FAILED",
+        jp: "項目異常",
+        sub: check.label.toUpperCase(),
+        detail: `ERROR: ${msg}\n\nOUTPUT:\n${trimDump(dump)}`,
+        tone: colors.red,
+      });
+    }
     setBusy(false);
   };
 
   const runAll = async () => {
     setBusy(true);
     console.log("[smoke] START run=all");
+    const dump: string[] = [];
+    const cap = (l: string) => {
+      dump.push(l);
+      log(l);
+    };
     let passed = 0;
     let automated = 0;
     let skipped = 0;
+    const failures: string[] = [];
     for (const check of checksRef.current!) {
       if (check.manual) {
         skipped += 1;
-        log(`⏭ ${check.label} (manual, skipped)`);
+        cap(`⏭ ${check.label} (manual, skipped)`);
         continue;
       }
       automated += 1;
-      log(`▶ ${check.label}`);
-      if (await runCheck(check)) passed += 1;
+      cap(`▶ ${check.label}`);
+      try {
+        const s = await check.run(cap);
+        passed += 1;
+        cap(`  PASS ${s}`);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        failures.push(check.label);
+        cap(`  FAIL ${msg}`);
+      }
     }
-    log(`■ done: ${passed}/${automated} automated passed (${skipped} manual skipped)`);
-    setSummary(`${passed}/${automated} automated passed (${skipped} manual skipped)`);
+    const counts = `${passed}/${automated} automated passed (${skipped} manual skipped)`;
+    cap(`■ done: ${counts}`);
+    console.log(`[smoke] ■ done: ${counts}`);
+    setSummary(counts);
+    setAlert({
+      title: failures.length === 0 ? "SUITE COMPLETE" : "SUITE COMPLETE · FAULTS",
+      jp: failures.length === 0 ? "全走査完了" : "異常混入",
+      sub: failures.length === 0 ? counts.toUpperCase() : `${counts.toUpperCase()} · FAILURES: ${failures.join(" / ")}`,
+      detail: trimDump(dump),
+      tone: failures.length > 0 ? colors.red : colors.green,
+    });
     setBusy(false);
   };
 
   useEffect(() => {
     if (!autoRun) return;
     if (autoRun === "all") {
-      runAll();
+      void runAll();
     } else {
       const check = checksRef.current?.find((c) => c.id === autoRun);
-      if (check) runOne(check);
+      if (check) void runOne(check);
       else log(`✗ unknown check "${autoRun}"`);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoRun]);
 
-  const passCount = Object.values(statuses).filter((s) => s.startsWith("PASS")).length;
-  const failCount = Object.values(statuses).filter((s) => s.startsWith("FAIL")).length;
-  const summaryTone = failCount > 0 ? colors.red : passCount > 0 ? colors.green : colors.dim;
+  const doneSomething = summary !== "";
 
   return (
     <View style={styles.root}>
@@ -345,58 +388,41 @@ export default function SmokeScreen({
       <ConsoleHeader
         jp="診断"
         en="DIAGNOSTICS · 自己診断"
-        stateLabel={`${passCount} PASS · ${failCount} FAIL`}
-        stateTone={failCount > 0 ? colors.red : passCount > 0 ? colors.green : colors.dim}
+        stateLabel={summary || "STANDBY"}
+        stateTone={doneSomething && summary.includes("FAIL") ? colors.red : doneSomething ? colors.green : colors.dim}
+        right={
+          <HudButton variant="ghost" small title="EXIT" onPress={onExit} />
+        }
       />
       <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.scroll}>
         {/* Suite result plate — carries the maestro smoke-summary contract. */}
-        <View style={[styles.summaryPlate, { borderColor: summaryTone }]}>
+        <View style={styles.summaryPlate}>
           <Scanlines />
-          <Text testID="smoke-summary" style={[text.interject, { fontSize: 34, color: summaryTone, textAlign: "center" }]}>
+          <Text testID="smoke-summary" style={[text.interject, { fontSize: 33, color: colors.text, textAlign: "center" }]}>
             {summary || "NOT RUN / 未実行"}
           </Text>
           <Text style={[text.interjectSub, { color: colors.dim }]}>DIAGNOSTICS SUITE</Text>
         </View>
 
         <Panel title="CHECKS / 項目" tone={colors.amber} accentLabel="PER-MODALITY">
-          <View style={styles.checkGrid}>
-            {checksRef.current.map((c) => {
-              const s = statuses[c.id];
-              const state = !s ? "idle" : s.startsWith("PASS") ? "pass" : s.startsWith("FAIL") ? "fail" : "run";
-              const tone = state === "pass" ? colors.green : state === "fail" ? colors.red : state === "run" ? colors.amber : colors.faint;
-              return (
-                <View key={c.id} style={styles.checkRow}>
-                  <View style={{ flex: 1, gap: 2 }}>
-                    <Text
-                      style={[
-                        text.value,
-                        { color: state === "run" ? colors.amber : colors.text, fontSize: 11 },
-                      ]}
-                    >
-                      {c.manual ? "[MANUAL] " : ""}{c.label}
-                    </Text>
-                    {s && (
-                      <Text style={[text.tiny, { color: tone }]} numberOfLines={2}>
-                        {s}
-                      </Text>
-                    )}
-                  </View>
-                  <Lamp tone={tone} size={6} />
-                  <HudButton
-                    variant={state === "fail" ? "danger" : "ghost"}
-                    small
-                    title={busy ? "…" : "RUN"}
-                    disabled={busy}
-                    onPress={() => runOne(c)}
-                  />
-                </View>
-              );
-            })}
-          </View>
+          {checksRef.current.map((c) => (
+            <View key={c.id} style={styles.checkRow}>
+              <Text style={[text.value, { color: colors.text, fontSize: 10, flex: 1 }]} numberOfLines={1}>
+                {c.manual ? "[MANUAL] " : ""}{c.label}
+              </Text>
+              <HudButton
+                variant="ghost"
+                small
+                title={busy ? "…" : "RUN"}
+                disabled={busy}
+                onPress={() => runOne(c)}
+              />
+            </View>
+          ))}
         </Panel>
 
         <View style={styles.controls}>
-          <HudButton variant="primary" title={busy ? "RUNNING…" : "RUN ALL / 全走査"} disabled={busy} onPress={runAll} />
+          <HudButton variant="primary" title={busy ? "RUNNING…" : "RUN ALL / 全走査"} disabled={busy} onPress={() => void runAll()} />
           <HudButton variant="ghost" title="EXIT" onPress={onExit} />
         </View>
 
@@ -408,6 +434,19 @@ export default function SmokeScreen({
           </ScrollView>
         </Panel>
       </ScrollView>
+
+      {/* Check results land here: full-screen plate with the dump, not an
+       * inline green update. */}
+      {alert && (
+        <AlertOverlay
+          title={alert.title}
+          jp={alert.jp}
+          sub={alert.sub}
+          detail={alert.detail}
+          tone={alert.tone}
+          onAck={() => setAlert(null)}
+        />
+      )}
     </View>
   );
 }
@@ -423,37 +462,35 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg },
-  scroll: { padding: spacing.sm, gap: spacing.sm },
+  scroll: { padding: 0, gap: 0 },
   summaryPlate: {
-    borderWidth: 1,
     backgroundColor: colors.field,
     paddingVertical: spacing.md,
     paddingHorizontal: spacing.lg,
     gap: 4,
     alignItems: "center",
     overflow: "hidden",
-  },
-  checkGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.line,
   },
   checkRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.sm,
-    borderWidth: 1,
-    borderColor: colors.line,
-    backgroundColor: colors.field,
-    padding: spacing.sm,
-    flexGrow: 1,
-    flexBasis: 200,
+    paddingVertical: 2,
+    minHeight: 26,
   },
-  controls: { flexDirection: "row", gap: spacing.sm, flexWrap: "wrap" },
+  controls: {
+    flexDirection: "row",
+    gap: spacing.sm,
+    flexWrap: "wrap",
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.md,
+  },
   log: {
-    maxHeight: 200,
+    maxHeight: 120,
     backgroundColor: colors.field,
-    padding: spacing.sm,
+    padding: spacing.xs,
     borderWidth: 1,
     borderColor: colors.line,
   },
