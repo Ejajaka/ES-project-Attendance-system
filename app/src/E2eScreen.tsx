@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { NativeSensors } from "./lib/nativeSensors";
 import { E2eController, type E2eRole } from "./lib/modes/e2e";
+import { roleLabel } from "./lib/roles";
 import type { Settings } from "./settings";
 import { colors, spacing, text } from "./theme";
 import {
@@ -236,7 +237,7 @@ export default function E2eScreen({
                     <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm }}>
                       <Lamp tone={roleTone} size={5} />
                       <Text style={[text.tiny, { color: roleTone, flex: 1, fontSize: 11 }]}>
-                        {e.role.toUpperCase()} · {e.phase}
+                        {roleLabel(e.role)} · {e.phase}
                         {open ? "  ▼" : "  ▶"}
                       </Text>
                       <Text style={[text.tiny, { color: colors.faint }]} numberOfLines={1}>

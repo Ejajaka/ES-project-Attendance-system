@@ -124,9 +124,11 @@ class ShussekiWifiModule : Module() {
     val connected = specifierAvailable || (requestedSsid != null && ssid == requestedSsid)
     return mapOf(
       "connectedToSoshin" to connected,
-      "soshinRssi" to (info?.rssi ?: -100),
+      // Only report RSSI while associated with the transmitter: otherwise the
+      // value belongs to some other network and would corrupt link stats.
+      "soshinRssi" to (if (connected) info?.rssi else null),
       "ssid" to ssid,
-      "bssid" to (info?.bssid ?: null),
+      "bssid" to (if (connected) info?.bssid else null),
     )
   }
 
@@ -147,8 +149,16 @@ class ShussekiWifiModule : Module() {
     }
 
   private fun startHotspot(promise: Promise) {
-    if (hotspotReservation != null) {
-      promise.reject(CodedException("E_HOTSPOT_ACTIVE", "hotspot already running", null))
+    // Idempotent: an Activity recreation can reset the JS side while this
+    // module (process-scoped) still holds the reservation. Re-engaging must
+    // reuse it rather than fail with "hotspot already running".
+    hotspotReservation?.let { existing ->
+      promise.resolve(
+        mapOf(
+          "ssid" to reservationSsid(existing),
+          "passphrase" to reservationPassphrase(existing),
+        ),
+      )
       return
     }
     val wifi = context.getSystemService(Context.WIFI_SERVICE) as? WifiManager

@@ -85,6 +85,62 @@ test("full flow: create session, ingest report, read presence", async () => {
   const presBody = await pres.json();
   expect(presBody.devices).toHaveLength(1);
   expect(presBody.devices[0].present).toBe(true);
+  // Monitors render per-channel link stats from the same response.
+  expect(presBody.devices[0].link.state).toBe("connected");
+  expect(presBody.devices[0].link.modalities).toHaveLength(3);
+});
+
+test("hotspot announce/read: a receiver can discover the transmitter's AP", async () => {
+  const app = makeApp();
+  await app.request("/api/sessions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId: "s1", roomId: "r1", secret: SECRET_B64 }),
+  });
+
+  const before = await app.request("/api/sessions/s1/hotspot");
+  expect(before.status).toBe(200);
+  expect((await before.json()).hotspot).toBeNull();
+
+  const post = await app.request("/api/sessions/s1/hotspot", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      deviceId: "tx-1",
+      ssid: "AndroidShare_1234",
+      passphrase: "abcd1234",
+    }),
+  });
+  expect(post.status).toBe(201);
+
+  const after = await app.request("/api/sessions/s1/hotspot");
+  expect(after.status).toBe(200);
+  const { hotspot } = await after.json();
+  expect(hotspot.ssid).toBe("AndroidShare_1234");
+  expect(hotspot.passphrase).toBe("abcd1234");
+  expect(hotspot.deviceId).toBe("tx-1");
+});
+
+test("hotspot announce rejects unknown sessions and missing SSIDs", async () => {
+  const app = makeApp();
+  const unknown = await app.request("/api/sessions/nope/hotspot", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ deviceId: "tx-1", ssid: "x" }),
+  });
+  expect(unknown.status).toBe(404);
+
+  await app.request("/api/sessions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId: "s1", roomId: "r1", secret: SECRET_B64 }),
+  });
+  const bad = await app.request("/api/sessions/s1/hotspot", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ deviceId: "tx-1" }),
+  });
+  expect(bad.status).toBe(400);
 });
 
 test("GET presence 404s for an unknown session", async () => {

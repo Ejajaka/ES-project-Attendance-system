@@ -175,3 +175,54 @@ User feedback round: "no grey lines", "popups missing", "plastered boxes",
 - Verified on-device v0.1.0+17: popup-with-dump for single checks and full
   suite, TRIAL COMPLETE popup, event-row expansion (SOSHIN · transmit ▼ →
   at-ts + detail), maestro text contracts intact.
+
+## P10 — Transmitter/Receiver rename + preset rooms + link stats (session 2026-09-17) — CODE DONE ✅, 2-PHONE FINAL PASS PENDING ⏳
+
+Full narrative: `docs/session-2026-09-17-report.md`.
+
+**Delivered (110 tests, BUILD 20 APK on the LG):**
+- Plain-language roles: TRANSMITTER (Soshin) / RECEIVER (Jushin) everywhere an
+  operator looks — home tiles, console headers, monitors, alerts, docs
+  (`app/src/lib/roles.ts`, `CONTEXT.md`, `README.md`).
+- 3 preset rooms (`app/src/lib/presets.ts`): ROOM 01/02/03 pin roomId,
+  sessionId, SSID hint + rolling secret; home picker; CONFIG simplified.
+- Hotspot auto-join: `POST/GET /api/sessions/:id/hotspot`; transmitter
+  announces the live `AndroidShare_XXXX`, receiver auto-joins it.
+- Link stats (`shared/src/link.ts` + `/presence` `link` field): per-channel
+  `connected/degraded/lost` + quality for BLE/WiFi/ultrasonic; receiver
+  `LINK TO TRANSMITTER` panel; transmitter monitor `B● W◐ U○` chips + age +
+  tap-for-JSON; `scripts/device-e2e.sh` + `maestro/{tx,rx}-console.yaml`.
+- Fixed on-device bugs: **base64 secret mismatch** (codes always rejected),
+  missing `CHANGE_NETWORK_STATE`, BLE scan `ConcurrentModificationException`,
+  dishonest WiFi RSSI, non-idempotent hotspot re-engage.
+
+**Next session — do these in order:**
+1. **Finish the two-phone pass on BUILD 20** (Pixel battery died mid-run):
+   - `scripts/device-e2e.sh setup` → `maestro --device <Pixel> test maestro/tx-console.yaml`
+     → `maestro --device <LG> test maestro/rx-console.yaml`
+     → `python3 scripts/approve-wifi.py <LG serial>` (Android 10 asks for
+     approval before joining the hotspot).
+   - Success gate: `GET /api/sessions/sess-1/presence` shows the receiver with
+     `wifi: connected` and `ultrasonicServerValid: true` (the base64 fix should
+     make the second one pass), and the TX ROOM MONITOR lists it with chips.
+2. **Ultrasonic cross-device tuning**: LG listener sees `runs=29` vs the
+   expected burst cadence (`present=false`). Inspect
+   `ShussekiUltrasonicModule.kt` burst params (`stampFreq 1800`, `bursts`,
+   `burstFrames`, `onToneRatio`) against the TX emission length; try a
+   calibration sweep (15–18.5 kHz) or tighten the run-count window.
+3. **Persist `DEVICE_ID`** (`app/src/identity.ts`) so relaunches don't create
+   ghost devices in the server roster / room monitor.
+4. **Deep-link auto-engage**: `shusseki://tx` / `shusseki://rx` (parse in a
+   testable `app/src/lib/launch.ts`, auto-run `start()`), so both consoles can
+   be driven without UI taps (and survive lock screens).
+5. **Harden console state across Activity recreation** (only hotspot is
+   idempotent today): consider re-engaging on mount when a native session is
+   still alive, or persisting the running flag.
+6. Optional polish: filter stale devices (age > 60 s) in both monitors or show
+   them greyed; add a "TX identity" row on the receiver (`link.modalities[ble]
+   .detail` already carries `-55 dBm · phone-xxxx`).
+
+**Build env reminders:** `GRADLE_OPTS=-Djava.net.preferIPv4Stack=true`, delete
+stale `node_modules/expo-modules-core/android/.cxx` on `No compatible library
+found`, and `EXPO_PUBLIC_SERVER_URL=http://127.0.0.1:8787` is baked at bundle
+time — each phone needs `adb reverse tcp:8787 tcp:8787`.

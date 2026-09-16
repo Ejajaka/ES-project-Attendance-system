@@ -46,8 +46,9 @@ npm-workspaces monorepo (see `docs/adr/0005-monorepo-structure.md`):
               #   deploy the same `app` on Cloudflare Workers). Ingests
               #   reports, re-verifies rolling codes, computes presence + evaluates
               #   against manual ground truth.
-/app/         # Expo / React Native app with two modes (Soshin + Jushin) and the
-              #   native modules (BLE, WiFi, ultrasonic, biometric) under modules/.
+/app/         # Expo / React Native app with two modes (transmitter/Soshin
+              #   + receiver/Jushin) and the native modules (BLE, WiFi,
+              #   ultrasonic, biometric) under modules/.
 /evaluation/  # Comparative-study runner + scripts (BLE vs WiFi vs Ultrasonic vs Fused).
 /docs/        # ADRs (docs/adr) and the test protocol (docs/test-protocol.md).
 PLAN.md       # Working plan, open questions, order of operations.
@@ -75,8 +76,10 @@ cd evaluation && npm run run:sample
 
 ### Server API
 - `POST /api/sessions` — create a session (shares the rolling-code secret).
-- `POST /api/reports` — ingest a Soshin/Jushin `DeviceReport`.
-- `GET  /api/sessions/:id/presence` — latest per-device presence.
+- `POST /api/reports` — ingest a transmitter/receiver `DeviceReport`.
+- `GET  /api/sessions/:id/presence` — latest per-device presence + three-channel link stats.
+- `POST /api/sessions/:id/hotspot` — transmitter publishes its live AutoHotspot.
+- `GET  /api/sessions/:id/hotspot` — receivers read it and auto-join.
 - `POST /api/sessions/:id/ground-truth` — record a manual headcount.
 - `GET  /api/sessions/:id/evaluate` — room-level count error + per-modality metrics.
 
@@ -85,25 +88,32 @@ cd evaluation && npm run run:sample
 cd app
 npx expo start          # then run on Android/iOS
 ```
-Pick **Soshin** (room-side: broadcasts the ultrasonic code + BLE beacon) or
-**Jushin** (phone-side: connects to the Soshin WiFi, listens for the code,
-reports BLE/WiFi). Set `EXPO_PUBLIC_SERVER_URL` to point at the fusion server
-(default `http://10.0.2.2:8787` for the Android emulator).
+Pick **TRANSMITTER** (room-side, brand Soshin: broadcasts the ultrasonic code
++ BLE beacon) or **RECEIVER** (phone-side, brand Jushin: connects to the
+transmitter's WiFi, listens for the code, reports BLE/WiFi). Both devices pick
+the same **preset room** (3 available), which pins roomId, sessionId, SSID hint
+and rolling-code secret; the transmitter announces its live AutoHotspot and
+receivers auto-join it. Set `EXPO_PUBLIC_SERVER_URL` to point at the fusion
+server (default `http://10.0.2.2:8787` for the Android emulator).
 
-> The app's Soshin/Jushin **logic** is fully unit-tested with `MockSensors`
-> (Vitest). The native modules (`modules/expo-shusseki-*`) are the only
-> device-dependent code and need a real build to exercise.
+> The app's transmitter/receiver **logic** is fully unit-tested with
+> `MockSensors` (Vitest). The native modules (`modules/expo-shusseki-*`) are the
+> only device-dependent code and need a real build to exercise.
 
 ### Super-user console (HUD)
 The UI is a dense NERV-style developer console for researchers, not a consumer
 app — every screen dumps raw sensor values, per-modality + fused confidences,
 server verdicts with RTT, roll code state, and a **ROOM MONITOR** that lists
 *every* device currently reporting to the session (so one phone shows the other's
-presence). Japanese labels (送信/受信/診断/試験) mirror the mode roles. The server
-URL is editable on-device (CONFIG panel), so each phone can point at the PC —
-`adb reverse` on USB devices, or the PC's LAN IP for a Wi-Fi phone — without a
-rebuild. Sessions auto-ensure on the server, so no manual `POST /api/sessions`
-step is needed to just run a report loop.
+presence). Each monitor row carries the device's three-channel **link stats**
+(`B● W◐ U○` + quality + age): the receiver sees its own link to the
+transmitter, and the transmitter sees every receiver's link back to it.
+Japanese labels (送信/受信/診断/試験) remain as brand accents behind the plain
+TRANSMITTER/RECEIVER terms. The server URL is editable on-device (CONFIG
+panel), so each phone can point at the PC — `adb reverse` on USB devices, or
+the PC's LAN IP for a Wi-Fi phone — without a rebuild. Sessions auto-ensure on
+the server, so no manual `POST /api/sessions` step is needed to just run a
+report loop.
 
 ## Deployment & versioning
 

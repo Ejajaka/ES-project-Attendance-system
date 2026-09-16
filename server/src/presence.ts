@@ -5,7 +5,9 @@ import {
   fuse,
   decide,
   verifyTOTP,
+  summarizeLink,
   type DeviceReport,
+  type LinkSummary,
   type Modality,
   type CombiningRule,
   type Mode,
@@ -45,6 +47,8 @@ export interface DevicePresence {
   ultrasonicServerValid: boolean | null;
   present: boolean;
   timestamp: number;
+  /** Connection stats for the room monitor (per-channel + overall). */
+  link: LinkSummary;
 }
 
 /**
@@ -110,5 +114,7 @@ export function computeDevicePresence(
     ultrasonicServerValid: uValid,
     present: decide(fused, config.threshold ?? 0.5),
     timestamp: report.timestamp,
+    // The link view uses the server-verified code, never the client's claim.
+    link: summarizeLink(report, { ultrasonicValid: uValid }),
   };
 }

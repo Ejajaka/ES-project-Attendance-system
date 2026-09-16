@@ -92,6 +92,36 @@ export function createApp(store: Store, sessions: SessionRegistry): Hono {
     return c.json({ sessionId: id, devices });
   });
 
+  // A transmitter announces its (system-assigned) hotspot SSID/passphrase so
+  // receivers that picked the same preset room can auto-join it.
+  app.post("/api/sessions/:id/hotspot", async (c) => {
+    const id = c.req.param("id");
+    if (!sessions.get(id)) return c.json({ error: "unknown session" }, 404);
+    let body: { deviceId?: string; ssid?: string; passphrase?: string | null };
+    try {
+      body = (await c.req.json()) as typeof body;
+    } catch {
+      return c.json({ error: "invalid JSON" }, 400);
+    }
+    if (!body?.deviceId || !body?.ssid) {
+      return c.json({ error: "deviceId and ssid are required" }, 400);
+    }
+    store.setHotspot({
+      sessionId: id,
+      deviceId: body.deviceId,
+      ssid: body.ssid,
+      passphrase: body.passphrase ?? null,
+      at: Date.now(),
+    });
+    return c.json({ ok: true }, 201);
+  });
+
+  app.get("/api/sessions/:id/hotspot", (c) => {
+    const id = c.req.param("id");
+    if (!sessions.get(id)) return c.json({ error: "unknown session" }, 404);
+    return c.json({ hotspot: store.getHotspot(id) ?? null });
+  });
+
   app.post("/api/sessions/:id/ground-truth", async (c) => {
     const id = c.req.param("id");
     let body: Omit<GroundTruth, "sessionId">;

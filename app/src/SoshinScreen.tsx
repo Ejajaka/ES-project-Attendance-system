@@ -2,9 +2,12 @@ import React, { useEffect, useRef, useState } from "react";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
 import { NativeSensors } from "./lib/nativeSensors";
 import type { Settings } from "./settings";
+import { presetById } from "./lib/presets";
 import { SoshinController, type SoshinConfig } from "./lib/modes/soshin";
-import { ensureSession } from "./lib/server";
+import { announceHotspot, ensureSession } from "./lib/server";
 import { useSessionPresence } from "./lib/useSessionPresence";
+import { roleLabel } from "./lib/roles";
+import { formatAge, linkChips, linkGlyph, linkStateLabel } from "./lib/linkView";
 import { DEVICE_ID } from "./identity";
 import { VERSION } from "./version";
 import { colors, MONO, spacing, text } from "./theme";
@@ -60,6 +63,7 @@ export default function SoshinScreen({
   const [lastAt, setLastAt] = useState<number | null>(null);
   const [nextAt, setNextAt] = useState<number | null>(null);
   const [bleState, setBleState] = useState<string>("idle");
+  const [announced, setAnnounced] = useState<boolean | null>(null);
   const [, setNow] = useState(Date.now());
   const [alert, setAlert] = useState<ConsoleAlert | null>(null);
   const bleFailRef = useRef(false);
@@ -68,7 +72,7 @@ export default function SoshinScreen({
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const { devices } = useSessionPresence(
+  const { devices, rttMs } = useSessionPresence(
     serverUrl,
     settings.sessionId,
     running, // only poll while the room beacon is live
@@ -113,12 +117,27 @@ export default function SoshinScreen({
       );
       setRunning(true);
 
+      // Publish the live AutoHotspot SSID/passphrase so receivers that picked
+      // the same preset room can auto-join it.
+      const announce = async () => {
+        const live = controller.hotspotInfo;
+        if (!live?.ssid) return;
+        const okAnnounce = await announceHotspot(serverUrl, settings.sessionId, {
+          deviceId: DEVICE_ID,
+          ssid: live.ssid,
+          passphrase: live.passphrase,
+        });
+        setAnnounced(okAnnounce);
+      };
+      await announce();
+
       const loop = async (now: number) => {
         const c = await controller.broadcast(now);
         setCode(c);
         setLastAt(Date.now());
         setNextAt(now + STEP_MS);
         setBroadcasts((n) => n + 1);
+        void announce(); // keep the hotspot announce fresh (re-announced each step)
         const adv = sensorsRef.current?.lastAdvertise;
         setBleState(
           adv == null
@@ -148,7 +167,7 @@ export default function SoshinScreen({
       setAlert({
         title: "ENGAGE FAILED",
         jp: "起動失敗",
-        sub: "SOSHIN UNIT COULD NOT BE RAISED",
+        sub: "TRANSMITTER (SOSHIN) COULD NOT BE RAISED",
         detail: msg,
         tone: colors.red,
       });
@@ -162,7 +181,7 @@ export default function SoshinScreen({
       try {
         await controllerRef.current.stop();
       } catch (e) {
-        console.warn("[soshin] stop failed:", e);
+        console.warn("[transmitter] stop failed:", e);
       }
     }
     controllerRef.current = null;
@@ -173,6 +192,7 @@ export default function SoshinScreen({
     setLastAt(null);
     setNextAt(null);
     setBleState("idle");
+    setAnnounced(null);
   };
 
   useEffect(() => {
@@ -192,7 +212,7 @@ export default function SoshinScreen({
       <BloomField a={colors.purple} b={colors.amber} />
       <ConsoleHeader
         jp="送信"
-        en="SOSHIN-LINK · ROOM TRANSMITTER"
+        en="TRANSMITTER · SOSHIN"
         stateLabel={running ? "OPERATIONAL" : "STANDBY"}
         stateTone={running ? colors.green : colors.dim}
         right={
@@ -245,6 +265,7 @@ export default function SoshinScreen({
 
           <View style={styles.colB}>
             <Panel title="BEACON / 部屋識別" tone={colors.purple} accentLabel="NODE">
+              <ValueRow k="preset" v={presetById(settings.presetId).name} labelWidth={92} tone={colors.cyan} />
               <ValueRow k="nodeId" v={DEVICE_ID} labelWidth={92} />
               <ValueRow k="roomId" v={settings.roomId} labelWidth={92} />
               <ValueRow k="sessionId" v={settings.sessionId} labelWidth={92} />
@@ -255,32 +276,64 @@ export default function SoshinScreen({
                 tone={ensured ? colors.green : colors.amber}
                 labelWidth={92}
               />
+              <ValueRow
+                k="uplink"
+                v={rttMs == null ? "—" : `presence poll ${rttMs}ms`}
+                tone={rttMs != null && rttMs > 1500 ? colors.amber : colors.green}
+                labelWidth={92}
+              />
             </Panel>
 
             {hotspot && (
               <Panel title="HOTSPOT / 接続網" tone={colors.amber} accentLabel="LOCAL-ONLY">
                 <ValueRow k="ssid" v={`"${hotspot.ssid}"`} tone={colors.amber} labelWidth={92} />
                 <ValueRow k="passphrase" v={`"${hotspot.passphrase}"`} tone={colors.amber} labelWidth={92} />
-                <Text style={[text.tiny, { color: colors.faint }]}>
-                  Jushin: 受信 mode → CONFIG → set SSID/pass → ENGAGE
+                <ValueRow
+                  k="announce"
+                  v={announced == null ? "pending…" : announced ? "PUBLISHED TO SERVER ✓" : "FAILED (receivers: manual CONFIG)"}
+                  tone={announced ? colors.green : announced === false ? colors.red : colors.dim}
+                  labelWidth={92}
+                />
+                <Text style={[text.tiny, { color: colors.faint, lineHeight: 14 }]}>
+                  Receivers on the same preset auto-join this SSID. Manual fallback: RECEIVER mode → CONFIG.
                 </Text>
               </Panel>
             )}
 
-            <Panel title="ROOM MONITOR / 部屋監視" tone={colors.cyan} accentLabel={`${devices.length} UNIT(S)`} grid>
+            <Panel
+              title="ROOM MONITOR / 部屋監視"
+              tone={colors.cyan}
+              accentLabel={`${devices.length} FOUND · ${devices.filter((d) => (d.link?.state ?? "lost") === "connected").length} LINKED`}
+              grid
+            >
               {devices.length === 0 ? (
                 <Text style={[text.tiny, { color: colors.faint }]}>
-                  No reports yet. Phone-side (Jushin) must be running and connected to this hotspot.
+                  No receivers found yet. A receiver must press ENGAGE with the
+                  same room preset, then it reports here every few seconds.
                 </Text>
               ) : (
-                devices.map((d) => (
-                  <ValueRow
-                    key={d.deviceId}
-                    k={`${d.present ? "●" : "○"} ${d.deviceId}`}
-                    v={`${d.mode} fused=${d.fused.toFixed(2)}${d.ultrasonicServerValid ? " code✓" : ""}`}
-                    tone={d.present ? colors.green : colors.red}
-                  />
-                ))
+                devices.map((d) => {
+                  const tone = d.link ? (d.link.state === "connected" ? colors.green : d.link.state === "degraded" ? colors.amber : colors.red) : colors.dim;
+                  const short = d.deviceId.length > 10 ? `…${d.deviceId.slice(-8)}` : d.deviceId;
+                  return (
+                    <ValueRow
+                      key={d.deviceId}
+                      k={`${d.present ? "●" : "○"} ${short} · ${roleLabel(d.mode)}`}
+                      v={`${linkChips(d.link)} · ${linkStateLabel(d.link?.state ?? "lost")} · ${Math.round((d.link?.quality ?? 0) * 100)}% · ${formatAge(d.timestamp, Date.now())} ago`}
+                      tone={tone}
+                      labelWidth={220}
+                      onPress={() =>
+                        setAlert({
+                          title: d.present ? "UNIT LINKED" : "UNIT WEAK",
+                          jp: "個機状態",
+                          sub: `${roleLabel(d.mode)} · ${short}`,
+                          detail: JSON.stringify(d, null, 2),
+                          tone,
+                        })
+                      }
+                    />
+                  );
+                })
               )}
             </Panel>
           </View>

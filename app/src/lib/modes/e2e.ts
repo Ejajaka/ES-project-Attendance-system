@@ -1,4 +1,4 @@
-import { generateTOTP, type DeviceReport } from "shared";
+import { encodeBase64Utf8, generateTOTP, type DeviceReport } from "shared";
 import type { DeviceSensors } from "../sensors";
 
 export type E2eRole = "soshin" | "jushin" | "both";
@@ -60,7 +60,8 @@ export class E2eController {
         body: JSON.stringify({
           sessionId: this.config.sessionId,
           roomId: this.config.roomId,
-          secret: this.config.secret,
+          // The server's session contract takes the secret base64-encoded.
+          secret: encodeBase64Utf8(this.config.secret),
         }),
       });
       this.log(`[e2e] session ensure: ${res.status}`);

@@ -40,8 +40,9 @@ class ShussekiBleModule : Module() {
   private var scanner: BluetoothLeScanner? = null
   private var advertiseCallback: AdvertiseCallback? = null
   private var scanCallback: ScanCallback? = null
+  // Guarded by `scanResults`' monitor: the scan callback (binder thread) adds
+  // while a JS thread may snapshot for `toReadings()`.
   private val scanResults = mutableListOf<ScanResult>()
-
   override fun definition() = ModuleDefinition {
     Name("ShussekiBle")
 
@@ -200,7 +201,7 @@ class ShussekiBleModule : Module() {
     val latch = CountDownLatch(1)
     scanCallback = object : ScanCallback() {
       override fun onScanResult(callbackType: Int, result: ScanResult) {
-        scanResults.add(result)
+        synchronized(scanResults) { scanResults.add(result) }
       }
     }
     val settings = ScanSettings.Builder()
@@ -219,7 +220,10 @@ class ShussekiBleModule : Module() {
   }
 
   private fun toReadings(): List<Map<String, Any>> {
-    return scanResults.mapNotNull { r ->
+    // Snapshot under the monitor: late scan callbacks must not mutate the list
+    // while we iterate (ConcurrentModificationException, seen on-device).
+    val snapshot = synchronized(scanResults) { scanResults.toList() }
+    return snapshot.mapNotNull { r ->
       val rec = r.scanRecord ?: return@mapNotNull null
       // Shusseki Soshins advertise manufacturer id 0xABCD with payload
       // "nodeId|code" — lets Jushin identify its peer and receive the code.

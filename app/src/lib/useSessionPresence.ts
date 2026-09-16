@@ -4,10 +4,17 @@ import { fetchSessionPresence, type ServerPresence } from "./server";
 /**
  * Polls `GET /api/sessions/:id/presence` on an interval while `active` is
  * true — the super-user's room monitor showing every device the server has
- * seen, not just this phone.
+ * seen, not just this phone. `rttMs` is the last poll's round-trip so the
+ * console can show its own uplink.
  */
-export function useSessionPresence(serverUrl: string, sessionId: string, active: boolean, intervalMs = 4000) {
+export function useSessionPresence(
+  serverUrl: string,
+  sessionId: string,
+  active: boolean,
+  intervalMs = 4000,
+) {
   const [devices, setDevices] = useState<ServerPresence[]>([]);
+  const [rttMs, setRttMs] = useState<number | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
   const mounted = useRef(true);
 
@@ -17,10 +24,11 @@ export function useSessionPresence(serverUrl: string, sessionId: string, active:
 
     const poll = async () => {
       if (!active || cancelled || !mounted.current) return;
-      const [d, err] = await fetchSessionPresenceSafe(serverUrl, sessionId);
+      const snap = await fetchSessionPresence(serverUrl, sessionId);
       if (!cancelled && mounted.current) {
-        setDevices(d);
-        setLastError(err);
+        setDevices(snap.devices);
+        setRttMs(snap.rttMs);
+        setLastError(snap.rttMs == null ? "server unreachable" : null);
       }
     };
 
@@ -34,17 +42,5 @@ export function useSessionPresence(serverUrl: string, sessionId: string, active:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serverUrl, sessionId, active, intervalMs]);
 
-  return { devices, lastError };
-}
-
-async function fetchSessionPresenceSafe(
-  serverUrl: string,
-  sessionId: string,
-): Promise<[ServerPresence[], string | null]> {
-  try {
-    const d = await fetchSessionPresence(serverUrl, sessionId);
-    return [d, null];
-  } catch (e) {
-    return [[], e instanceof Error ? e.message : "fetch failed"];
-  }
+  return { devices, rttMs, lastError };
 }

@@ -1,0 +1,12 @@
+appId: com.shusseki.app
+---
+# Drive the room-side TRANSMITTER console: preset ROOM 01 is selected by
+# default; engage and confirm the beacon is operational.
+- launchApp
+- assertVisible: "TRANSMITTER"
+- assertVisible: "ROOM 01"
+- tapOn: "TRANSMITTER"
+- tapOn: "UNIT-01 ENGAGE"
+- extendedWaitUntil:
+    visible: "OPERATIONAL"
+    timeout: 30000

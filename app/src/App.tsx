@@ -12,9 +12,16 @@ import {
 } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { useFonts } from "expo-font";
+import { useKeepAwake } from "expo-keep-awake";
 import type { E2eRole } from "./lib/modes/e2e";
 import type { Settings } from "./settings";
-import { DEFAULT_SETTINGS } from "./settings";
+import {
+  applyPreset,
+  DEFAULT_SETTINGS,
+  ROOM_PRESETS,
+  presetById,
+  type RoomPreset,
+} from "./lib/presets";
 import { DEVICE_ID } from "./identity";
 import { VERSION } from "./version";
 import { colors, DEPARTURE, MONO, radius, spacing, text } from "./theme";
@@ -102,6 +109,7 @@ export default function App() {
     <SafeAreaProvider>
       <SafeAreaView style={styles.safe} edges={["top", "left", "right", "bottom"]}>
         <StatusBar barStyle="light-content" backgroundColor={colors.bg} hidden={false} />
+        {mode !== "none" && <ActiveKeepAwake />}
         {mode === "none" ? (
           <HomeScreen
             settings={settings}
@@ -191,18 +199,42 @@ function HomeScreen({
       </View>
       <Hazard height={10} a={colors.purple} />
 
+      <Panel
+        title="ROOM PRESET / 部屋選択"
+        tone={colors.cyan}
+        accentLabel="PICK THE SAME ROOM ON EVERY DEVICE"
+        grid
+      >
+        <View style={styles.presetRow}>
+          {ROOM_PRESETS.map((p) => (
+            <PresetTile
+              key={p.id}
+              preset={p}
+              selected={settings.presetId === p.id}
+              onPress={() => onSettingsChange(applyPreset(settings, p.id))}
+            />
+          ))}
+        </View>
+        <Text style={[text.tiny, { color: colors.faint, lineHeight: 14 }]}>
+          Host picks a room, every phone picks the same one: roomId, sessionId,
+          rolling-code secret and hotspot announce are matched automatically.
+        </Text>
+      </Panel>
+
       <View style={styles.missionRow}>
         <MissionTile
           jp="送信"
-          en="SOSHIN"
-          sub="ROOM TRANSMITTER · 部屋送信機"
+          en="TRANSMITTER"
+          brand="SOSHIN"
+          sub="ROOM HOST · ULTRASONIC SOURCE · 部屋側"
           tone={colors.purple}
           onPress={() => onPick("soshin")}
         />
         <MissionTile
           jp="受信"
-          en="JUSHIN"
-          sub="PHONE RECEIVER · 端末受信機"
+          en="RECEIVER"
+          brand="JUSHIN"
+          sub="USER PHONE · LISTENS TO ROOM · 端末側"
           tone={colors.green}
           onPress={() => onPick("jushin")}
         />
@@ -232,9 +264,47 @@ function HomeScreen({
   );
 }
 
+/** Keep the screen awake while a mode console is engaged. */
+function ActiveKeepAwake() {
+  useKeepAwake();
+  return null;
+}
+
+/** One of the three preset rooms. */
+function PresetTile({
+  preset,
+  selected,
+  onPress,
+}: {
+  preset: RoomPreset;
+  selected: boolean;
+  onPress: () => void;
+}) {
+  const tone = selected ? colors.green : colors.faint;
+  return (
+    <HudButton
+      variant="ghost"
+      onPress={onPress}
+      style={[styles.presetTile, { borderColor: selected ? colors.green : colors.lineStrong }]}
+    >
+      <Text style={{ fontFamily: DEPARTURE, fontSize: 20, letterSpacing: 1, color: tone }}>
+        {preset.name}
+      </Text>
+      <Text style={[text.hudSub, { color: colors.faint }]}>{preset.jp}</Text>
+      <Text style={[text.tiny, { color: colors.dim, marginTop: 4 }]}>
+        {preset.roomId} · {preset.sessionId}
+      </Text>
+      <Text style={[text.value, { color: tone, marginTop: 6, letterSpacing: 2 }]}>
+        {selected ? "● BOUND" : "○ SELECT"}
+      </Text>
+    </HudButton>
+  );
+}
+
 function MissionTile({
   jp,
   en,
+  brand,
   sub,
   tone,
   onPress,
@@ -242,6 +312,7 @@ function MissionTile({
 }: {
   jp: string;
   en: string;
+  brand?: string;
   sub: string;
   tone: string;
   onPress: () => void;
@@ -249,10 +320,24 @@ function MissionTile({
 }) {
   return (
     <HudButton variant="ghost" onPress={onPress} style={[styles.tile, style]}>
-      <Text style={[text.hudJapanese, { fontSize: 34, color: tone }]}>{jp}</Text>
-      <Text style={[{ fontFamily: DEPARTURE, fontSize: 16, letterSpacing: 1, color: colors.text, marginTop: 4 }]}>{en}</Text>
+      <Text
+        style={{
+          fontFamily: DEPARTURE,
+          fontSize: 22,
+          letterSpacing: 1,
+          color: tone,
+          textShadowColor: tone,
+          textShadowRadius: 10,
+        }}
+      >
+        {en}
+      </Text>
+      <Text style={[text.hudSub, { color: colors.dim, marginTop: 4 }]}>
+        {jp}
+        {brand ? ` · ${brand}` : ""}
+      </Text>
       <Text style={[text.tiny, { color: colors.dim, marginTop: 3 }]}>{sub}</Text>
-      <Text style={[text.value, { color: tone, fontSize: 13, marginTop: 8, letterSpacing: 3, fontWeight: "800" }]}>
+      <Text style={[text.value, { color: tone, fontSize: 13, marginTop: 8, letterSpacing: 3 }]}>
         ▶ ENGAGE
       </Text>
     </HudButton>
@@ -268,11 +353,12 @@ function SettingsPanel({
   onChange: (s: Settings) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const preset = presetById(settings.presetId);
   return (
     <Panel
       title="CONFIG / 設定"
       tone={colors.amber}
-      accentLabel="SESSION PARAMETERS"
+      accentLabel={`${preset.name} BOUND`}
       right={
         <HudButton
           variant="ghost"
@@ -285,21 +371,28 @@ function SettingsPanel({
       {open && (
         <>
           <Field label="SERVER URL" value={settings.serverUrl} onChange={(v) => onChange({ ...settings, serverUrl: v })} />
-          <Field label="ROOM ID" value={settings.roomId} onChange={(v) => onChange({ ...settings, roomId: v })} />
-          <Field label="SESSION ID" value={settings.sessionId} onChange={(v) => onChange({ ...settings, sessionId: v })} />
-          <Field label="SOSHIN SSID" value={settings.soshinSsid} onChange={(v) => onChange({ ...settings, soshinSsid: v })} />
-          <Field label="HOTSPOT PASS" value={settings.soshinPass ?? ""} onChange={(v) => onChange({ ...settings, soshinPass: v })} secure />
-          <Field label="SHARED SECRET" value={settings.secret} onChange={(v) => onChange({ ...settings, secret: v })} secure />
+          <Field
+            label="HOTSPOT SSID (FALLBACK)"
+            value={settings.soshinSsid}
+            onChange={(v) => onChange({ ...settings, soshinSsid: v })}
+          />
+          <Field
+            label="HOTSPOT PASS (FALLBACK)"
+            value={settings.soshinPass ?? ""}
+            onChange={(v) => onChange({ ...settings, soshinPass: v })}
+            secure
+          />
           <Text style={[text.tiny, { color: colors.faint, lineHeight: 14 }]}>
-            The Soshin secret must match the one used when creating the server
-            session ({settings.serverUrl}/api/sessions). The server re-verifies
-            the rolling code against it.
+            Transmitter announces its live AutoHotspot (AndroidShare_XXXX) to the
+            server; receivers auto-join it. Fallback fields are only used when
+            the announce cannot be reached. Room/session/secret come from the
+            {" "}{preset.name} preset — the server re-verifies the rolling code.
           </Text>
         </>
       )}
       {!open && (
         <Text style={[text.tiny, { color: colors.faint }]}>
-          room={settings.roomId} · session={settings.sessionId} · ssid={settings.soshinSsid} · secret={settings.secret}
+          preset={preset.name} · room={settings.roomId} · session={settings.sessionId} · server={settings.serverUrl}
         </Text>
       )}
     </Panel>
@@ -351,6 +444,19 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     gap: spacing.sm,
     paddingVertical: spacing.sm,
+  },
+  presetRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.sm,
+  },
+  presetTile: {
+    flexGrow: 1,
+    flexBasis: "30%",
+    minWidth: 150,
+    alignItems: "flex-start",
+    flexDirection: "column",
+    padding: spacing.sm,
   },
   tile: {
     flexGrow: 1,

@@ -20,12 +20,25 @@ export interface Store {
   /** Upsert the latest E2E event per (session, device, phase). */
   e2eUpsert(event: E2eEvent): void;
   e2eForSession(sessionId: string): E2eEvent[];
+  /** Remember the transmitter's live hotspot so receivers can auto-join. */
+  setHotspot(announcement: HotspotAnnouncement): void;
+  getHotspot(sessionId: string): HotspotAnnouncement | undefined;
+}
+
+/** A transmitter announcing its LocalOnlyHotspot to the session. */
+export interface HotspotAnnouncement {
+  sessionId: string;
+  deviceId: string;
+  ssid: string;
+  passphrase: string | null;
+  at: number;
 }
 
 export class MemoryStore implements Store {
   private reports: DeviceReport[] = [];
   private groundTruths: GroundTruth[] = [];
   private e2eLog: E2eEvent[] = [];
+  private hotspots = new Map<string, HotspotAnnouncement>();
 
   addReport(report: DeviceReport): void {
     this.reports.push(report);
@@ -68,5 +81,13 @@ export class MemoryStore implements Store {
 
   e2eForSession(sessionId: string): E2eEvent[] {
     return this.e2eLog.filter((e) => e.sessionId === sessionId);
+  }
+
+  setHotspot(announcement: HotspotAnnouncement): void {
+    this.hotspots.set(announcement.sessionId, announcement);
+  }
+
+  getHotspot(sessionId: string): HotspotAnnouncement | undefined {
+    return this.hotspots.get(sessionId);
   }
 }

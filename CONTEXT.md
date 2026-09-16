@@ -6,15 +6,19 @@ sharpen or add a term, update this file inline.
 
 ## Modes
 
-- **Soshin** — the fixed, room-side device. Sole transmitter of the ultrasonic
-  rolling code. Advertises/scans BLE, runs a WiFi hotspot/hub, and performs a
-  fast local pre-check of rolling codes. It is *not* a person; it is a phone or
-  node left in the room.
-- **Jushin** — the phone a person carries to prove presence. Connects to the
-  Soshin's WiFi, reports its own BLE interface + observed Soshin BLE signal,
-  reports WiFi signal info, and **listens only** for the Soshin ultrasonic
-  rolling code. It never transmits ultrasound. Performs an on-device biometric
-  check at start/end of attendance.
+- **Transmitter (Soshin)** — the fixed, room-side device. Sole transmitter of
+  the ultrasonic rolling code. Advertises/scans BLE, runs a WiFi hotspot/hub,
+  and performs a fast local pre-check of rolling codes. It is *not* a person;
+  it is a phone or node left in the room. UI label: **TRANSMITTER**.
+- **Receiver (Jushin)** — the phone a person carries to prove presence.
+  Connects to the transmitter's WiFi, reports its own BLE interface + observed
+  transmitter BLE signal, reports WiFi signal info, and **listens only** for
+  the transmitter's ultrasonic rolling code. It never transmits ultrasound.
+  Performs an on-device biometric check at start/end of attendance. UI label:
+  **RECEIVER**.
+
+> The wire/report field values remain `soshin`/`jushin` (protocol compatibility);
+> every human-readable surface says TRANSMITTER/RECEIVER first, brand second.
 
 ## Core concepts
 
@@ -43,7 +47,7 @@ sharpen or add a term, update this file inline.
 ## Roles in the pipeline
 
 ```
-Device (Soshin/Jushin) --Report--> Server --ingest--> Observations
+Device (transmitter/receiver) --Report--> Server --ingest--> Observations
                                             |
                                             v
                                   per-Modality Confidence
@@ -54,8 +58,21 @@ Device (Soshin/Jushin) --Report--> Server --ingest--> Observations
 
 ## Boundaries that must not leak
 
-- A Jushin **never** emits ultrasound. Soshin is the sole transmitter.
+- A Receiver (Jushin) **never** emits ultrasound. The Transmitter (Soshin) is
+  the sole source.
 - Client-side RollingCode checks are an optimization, not a security boundary;
   the Server verifies every code.
 - BLE/WiFi are treated as *approximate, supplementary* room-proximity sensors,
   not precise localizers.
+
+## Link stats
+
+- **LinkSummary** — per-device connection health across `ble`, `wifi` and
+  `ultrasonic` (`connected` / `degraded` / `lost` + 0..1 quality). Computed by
+  `summarizeLink` on both the receiver (its own link) and the server (every
+  device in the session, for the transmitter's monitor).
+- **HotspotAnnouncement** — the transmitter publishes its live
+  `AndroidShare_XXXX` SSID/passphrase to the session so receivers that picked
+  the same preset room can auto-join.
+- **RoomPreset** — one of three fixed room identities (roomId, sessionId, SSID
+  hint, rolling secret) selectable on the home console.

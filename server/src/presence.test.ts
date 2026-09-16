@@ -99,3 +99,35 @@ test("confidences object only contains modalities that were reported", () => {
   expect(keys).toEqual(expect.arrayContaining(["ble", "ultrasonic"]));
   expect(keys).not.toContain("wifi");
 });
+
+test("presence exposes a three-channel link summary for monitors", () => {
+  const p = computeDevicePresence(jushinReport(), baseConfig);
+  expect(p.link.state).toBe("connected");
+  expect(p.link.quality).toBeGreaterThan(0.5);
+  expect(p.link.modalities.map((m) => m.modality)).toEqual([
+    "ble",
+    "wifi",
+    "ultrasonic",
+  ]);
+});
+
+test("link summary uses the server-verified ultrasonic code, not the client's", () => {
+  const tampered = jushinReport({
+    ultrasonic: { received: true, valid: true, code: "000000" },
+  });
+  const p = computeDevicePresence(tampered, baseConfig);
+  const ultra = p.link.modalities.find((m) => m.modality === "ultrasonic")!;
+  expect(ultra.state).toBe("degraded");
+  expect(ultra.detail.toLowerCase()).toContain("rejected");
+});
+
+test("link summary reports lost when every channel is down", () => {
+  const weak = jushinReport({
+    ble: { readings: [{ nodeId: "soshin", rssi: -92 }] },
+    wifi: { connectedToSoshin: false, soshinRssi: null },
+    ultrasonic: { received: false, valid: null, code: null, missReason: "no_signal" },
+  });
+  const p = computeDevicePresence(weak, baseConfig);
+  expect(p.link.state).toBe("lost");
+  expect(p.link.quality).toBe(0);
+});

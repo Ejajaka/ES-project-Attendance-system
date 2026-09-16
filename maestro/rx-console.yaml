@@ -1,0 +1,16 @@
+appId: com.shusseki.app
+---
+# Drive the carried RECEIVER console: preset ROOM 01 is selected by default;
+# engage and confirm the link-to-transmitter plate is live.
+- launchApp
+- assertVisible: "RECEIVER"
+- tapOn: "RECEIVER"
+- tapOn: "UNIT-01 ENGAGE"
+- extendedWaitUntil:
+    visible: ".*LINK ACTIVE.*"
+    timeout: 45000
+- assertVisible: ".*LINK TO TRANSMITTER.*"
+- scrollUntilVisible:
+    element:
+      text: "ROOM MONITOR / 部屋監視"
+    timeout: 20000

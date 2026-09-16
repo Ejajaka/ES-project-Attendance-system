@@ -6,14 +6,19 @@ import {
   ultrasonicConfidence,
   fuse,
   decide,
+  summarizeLink,
   type DeviceReport,
+  type LinkSummary,
 } from "shared";
 import { NativeSensors } from "./lib/nativeSensors";
 import type { Settings } from "./settings";
+import { presetById } from "./lib/presets";
 import { JushinController, type JushinConfig } from "./lib/modes/jushin";
 import { HttpReporter, type ReportResult } from "./lib/reporter";
-import { ensureSession, type ServerPresence } from "./lib/server";
+import { ensureSession, fetchHotspot, type ServerPresence } from "./lib/server";
 import { useSessionPresence } from "./lib/useSessionPresence";
+import { roleLabel } from "./lib/roles";
+import { formatAge, linkChips, linkGlyph, linkStateLabel, modalityLabel } from "./lib/linkView";
 import { DEVICE_ID } from "./identity";
 import { VERSION } from "./version";
 import { colors, MONO, spacing, text } from "./theme";
@@ -73,6 +78,7 @@ export default function JushinScreen({
   const [error, setError] = useState<string | null>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [alert, setAlert] = useState<ConsoleAlert | null>(null);
+  const [joinSource, setJoinSource] = useState<string>("—");
   const controllerRef = useRef<JushinController | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const busyRef = useRef(false);
@@ -88,7 +94,20 @@ export default function JushinScreen({
         roomId: settings.roomId,
         secret: settings.secret,
       });
-      console.log(`[jushin] session ensure: ${ok}`);
+      console.log(`[receiver] session ensure: ${ok}`);
+
+      // Auto-join the transmitter's live hotspot: the transmitter announces
+      // the Android-generated SSID/passphrase to the session. Fall back to
+      // manual CONFIG values when the announce is unreachable.
+      const announced = await fetchHotspot(serverUrl, settings.sessionId);
+      const ssid = announced?.ssid ?? settings.soshinSsid;
+      const pass = announced?.passphrase ?? settings.soshinPass ?? undefined;
+      setJoinSource(
+        announced
+          ? `AUTO ${announced.ssid}`
+          : `MANUAL ${settings.soshinSsid}`,
+      );
+      console.log(`[receiver] join target ${ssid} (${announced ? "announced" : "config fallback"})`);
 
       const sensors = new NativeSensors();
       const reporter = new HttpReporter(serverUrl);
@@ -96,8 +115,8 @@ export default function JushinScreen({
         deviceId: DEVICE_ID,
         roomId: settings.roomId,
         sessionId: settings.sessionId,
-        soshinSsid: settings.soshinSsid,
-        soshinPass: settings.soshinPass || undefined,
+        soshinSsid: ssid,
+        soshinPass: pass,
       };
       const controller = new JushinController(sensors, config, reporter);
       const b = await controller.startAttendance();
@@ -142,7 +161,7 @@ export default function JushinScreen({
             );
           }
         } catch (e) {
-          console.warn("[jushin] tick failed:", e);
+          console.warn("[receiver] tick failed:", e);
           const msg = e instanceof Error ? e.message : String(e);
           setError(msg);
           setAlert({
@@ -170,7 +189,7 @@ export default function JushinScreen({
       try {
         await controllerRef.current.endAttendance();
       } catch (e) {
-        console.warn("[jushin] end failed:", e);
+        console.warn("[receiver] end failed:", e);
       }
     }
     controllerRef.current = null;
@@ -188,13 +207,25 @@ export default function JushinScreen({
   const sp = lastResult?.presence ?? null;
   const rtt = lastResult?.rttMs ?? null;
   const verdict = sp?.present;
+  // Connection stats to the transmitter, from this phone's last report. The
+  // server's verdict overrules the client's ultrasonic validity when present.
+  const link: LinkSummary | null = lastReport
+    ? summarizeLink(lastReport, { ultrasonicValid: sp?.ultrasonicServerValid })
+    : null;
+  const linkTone = !link
+    ? colors.dim
+    : link.state === "connected"
+      ? colors.green
+      : link.state === "degraded"
+        ? colors.amber
+        : colors.red;
 
   return (
     <View style={styles.root}>
       <BloomField a={colors.green} b={colors.cyan} />
       <ConsoleHeader
         jp="受信"
-        en="JUSHIN-LINK · PHONE RECEIVER"
+        en="RECEIVER · JUSHIN"
         stateLabel={running ? `LINK ACTIVE · ${fmtClock(uptime)}` : "STANDBY"}
         stateTone={running ? colors.green : colors.dim}
         right={
@@ -249,6 +280,51 @@ export default function JushinScreen({
               </View>
             </Panel>
 
+            {/* LINK — this phone's connection stats to the room transmitter */}
+            <Panel
+              title="LINK TO TRANSMITTER / 回線"
+              tone={linkTone}
+              accentLabel={link ? linkStateLabel(link.state) : "NO DATA"}
+              grid
+            >
+              {link ? (
+                <>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm }}>
+                    <Lamp tone={linkTone} size={8} />
+                    <Text style={[text.value, { color: linkTone, fontSize: 13 }]}>
+                      {linkChips(link)} · LINK {linkStateLabel(link.state)} · {Math.round(link.quality * 100)}%
+                    </Text>
+                  </View>
+                  <Meter label="OVERALL LINK QUALITY" value={link.quality} height={10} />
+                  {link.modalities.map((m) => {
+                    const mTone = m.state === "connected" ? colors.green : m.state === "degraded" ? colors.amber : colors.red;
+                    return (
+                      <View key={m.modality} style={{ gap: 2 }}>
+                        <ValueRow
+                          k={modalityLabel(m.modality)}
+                          v={`${linkGlyph(m.state)} ${m.detail}`}
+                          tone={mTone}
+                          labelWidth={92}
+                        />
+                        <Meter label={`${modalityLabel(m.modality)} QUALITY`} value={m.quality} height={6} />
+                      </View>
+                    );
+                  })}
+                  <ValueRow
+                    k="uplink"
+                    v={rtt != null ? `server ${rtt}ms` : "—"}
+                    tone={rtt != null && rtt > 1500 ? colors.amber : colors.green}
+                    labelWidth={92}
+                  />
+                  <ValueRow k="join" v={joinSource} tone={colors.cyan} labelWidth={92} />
+                </>
+              ) : (
+                <Text style={[text.tiny, { color: colors.faint }]}>
+                  No link data yet — pick a preset and ENGAGE.
+                </Text>
+              )}
+            </Panel>
+
             <View style={styles.controls}>
               {!running ? (
                 <HudButton variant="primary" title="UNIT-01 ENGAGE" onPress={start} />
@@ -269,7 +345,8 @@ export default function JushinScreen({
             >
               {!lastReport ? (
                 <Text style={[text.tiny, { color: colors.faint }]}>
-                  No observations yet. Set Soshin SSID/pass in CONFIG, then ENGAGE.
+                  No observations yet. Pick a room preset, then ENGAGE — the
+                  transmitter's hotspot is discovered automatically.
                 </Text>
               ) : (
                 <View style={styles.syncRow}>
@@ -371,30 +448,48 @@ export default function JushinScreen({
             </Panel>
 
             {/* 部屋監視 — every unit in the room; tap a row for its full verdict */}
-            <Panel title="ROOM MONITOR / 部屋監視" tone={colors.green} accentLabel={`${devices.length} UNIT(S)`} grid>
+            <Panel
+              title="ROOM MONITOR / 部屋監視"
+              tone={colors.green}
+              accentLabel={`${devices.length} FOUND · ${devices.filter((d) => (d.link?.state ?? "lost") === "connected").length} LINKED`}
+              grid
+            >
               {devices.length === 0 ? (
                 <Text style={[text.tiny, { color: colors.faint }]}>
-                  No devices reported yet. Start attendance; the room-side Soshin
-                  will appear here too when it broadcasts.
+                  No devices reported yet. Start attendance; every phone on the
+                  same preset room appears here with its three-channel link.
                 </Text>
               ) : (
-                devices.map((d: ServerPresence) => (
-                  <ValueRow
-                    key={d.deviceId}
-                    k={`${d.present ? "●" : "○"} ${d.deviceId}${d.deviceId === DEVICE_ID ? " (ME)" : ""}`}
-                    v={`${d.mode} fused=${d.fused.toFixed(2)}${d.ultrasonicServerValid ? " code✓" : ""}`}
-                    tone={d.present ? colors.green : colors.red}
-                    onPress={() =>
-                      setAlert({
-                        title: d.present ? "UNIT ACTIVE" : "UNIT INACTIVE",
-                        jp: "個機状態",
-                        sub: `${d.deviceId} · ${d.mode.toUpperCase()} · SYNC DATA`,
-                        detail: JSON.stringify(d, null, 2),
-                        tone: d.present ? colors.green : colors.red,
-                      })
-                    }
-                  />
-                ))
+                devices.map((d: ServerPresence) => {
+                  const tone = d.link
+                    ? d.link.state === "connected"
+                      ? colors.green
+                      : d.link.state === "degraded"
+                        ? colors.amber
+                        : colors.red
+                    : d.present
+                      ? colors.green
+                      : colors.red;
+                  const short = d.deviceId.length > 10 ? `…${d.deviceId.slice(-8)}` : d.deviceId;
+                  return (
+                    <ValueRow
+                      key={d.deviceId}
+                      k={`${d.present ? "●" : "○"} ${short} · ${roleLabel(d.mode)}${d.deviceId === DEVICE_ID ? " (ME)" : ""}`}
+                      v={`${linkChips(d.link)} · ${Math.round((d.link?.quality ?? d.fused) * 100)}% · ${formatAge(d.timestamp, Date.now())} ago`}
+                      tone={tone}
+                      labelWidth={220}
+                      onPress={() =>
+                        setAlert({
+                          title: d.present ? "UNIT ACTIVE" : "UNIT INACTIVE",
+                          jp: "個機状態",
+                          sub: `${roleLabel(d.mode)} · ${short}`,
+                          detail: JSON.stringify(d, null, 2),
+                          tone,
+                        })
+                      }
+                    />
+                  );
+                })
               )}
             </Panel>
           </View>
