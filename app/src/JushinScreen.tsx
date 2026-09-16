@@ -22,6 +22,7 @@ import { formatAge, linkChips, linkGlyph, linkStateLabel, modalityLabel } from "
 import { DEVICE_ID } from "./identity";
 import { VERSION } from "./version";
 import { colors, MONO, spacing, text } from "./theme";
+import { DeviceLinkRow } from "./components/DeviceLinkRow";
 import {
   AlertOverlay,
   BloomField,
@@ -460,36 +461,27 @@ export default function JushinScreen({
                   same preset room appears here with its three-channel link.
                 </Text>
               ) : (
-                devices.map((d: ServerPresence) => {
-                  const tone = d.link
-                    ? d.link.state === "connected"
-                      ? colors.green
-                      : d.link.state === "degraded"
-                        ? colors.amber
-                        : colors.red
-                    : d.present
-                      ? colors.green
-                      : colors.red;
-                  const short = d.deviceId.length > 10 ? `…${d.deviceId.slice(-8)}` : d.deviceId;
-                  return (
-                    <ValueRow
-                      key={d.deviceId}
-                      k={`${d.present ? "●" : "○"} ${short} · ${roleLabel(d.mode)}${d.deviceId === DEVICE_ID ? " (ME)" : ""}`}
-                      v={`${linkChips(d.link)} · ${Math.round((d.link?.quality ?? d.fused) * 100)}% · ${formatAge(d.timestamp, Date.now())} ago`}
-                      tone={tone}
-                      labelWidth={220}
-                      onPress={() =>
-                        setAlert({
-                          title: d.present ? "UNIT ACTIVE" : "UNIT INACTIVE",
-                          jp: "個機状態",
-                          sub: `${roleLabel(d.mode)} · ${short}`,
-                          detail: JSON.stringify(d, null, 2),
-                          tone,
-                        })
-                      }
-                    />
-                  );
-                })
+                devices.map((d: ServerPresence) => (
+                  <DeviceLinkRow
+                    key={d.deviceId}
+                    device={d}
+                    now={Date.now()}
+                    onPress={() =>
+                      setAlert({
+                        title: d.present ? "UNIT ACTIVE" : "UNIT INACTIVE",
+                        jp: "個機状態",
+                        sub: `${roleLabel(d.mode)} · ${d.deviceId}${d.deviceId === DEVICE_ID ? " (ME)" : ""}`,
+                        detail: JSON.stringify(d, null, 2),
+                        tone:
+                          d.link?.state === "connected"
+                            ? colors.green
+                            : d.link?.state === "degraded"
+                              ? colors.amber
+                              : colors.red,
+                      })
+                    }
+                  />
+                ))
               )}
             </Panel>
           </View>

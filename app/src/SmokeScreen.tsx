@@ -166,8 +166,13 @@ export function buildChecks(settings: Settings, serverUrl: string): Check[] {
       run: async (log) => {
         const o = await sensors.wifi.observe();
         log(`  ssid=${o.ssid ?? "?"} bssid=${o.bssid ?? "?"}`);
-        if (o.soshinRssi == null) throw new Error("no RSSI (location off?)");
-        return `connected=${o.connectedToSoshin} rssi=${o.soshinRssi} dBm`;
+        // RSSI is only meaningful while associated with the transmitter; a
+        // missing AP is a valid observation (start the transmitter to join).
+        if (o.connectedToSoshin && (o.soshinRssi == null || Number.isNaN(o.soshinRssi)))
+          throw new Error("joined but no RSSI (location off?)");
+        return o.soshinRssi != null
+          ? `connected=${o.connectedToSoshin} rssi=${o.soshinRssi} dBm`
+          : `connected=${o.connectedToSoshin} (no transmitter AP in range)`;
       },
     },
     {

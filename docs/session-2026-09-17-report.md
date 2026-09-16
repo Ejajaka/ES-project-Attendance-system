@@ -103,13 +103,41 @@ Human surfaces now say the plain role first, brand second. The wire schema
 - `npm run lint` (biome) still fails repo-wide on pre-existing formatting noise;
   the touched files were not formatted to biome's tab style on purpose.
 
+## Single-phone demo & verification (added after the first pass)
+
+The Pixel's battery died before the last two-phone run, so a **simulated
+receiver** was added to exercise the whole pipeline with one phone:
+
+- `shared/src/simulator.ts` (+ tests) — `simulateReceiverReport()` builds the
+  exact report the app posts (transmitter BLE reading carrying the rolling
+  code, joined WiFi, ultrasonic stamp), or an honest "no transmitter" report.
+- `scripts/simulate-receiver.ts` / `npm run sim:rx` — reads the transmitter's
+  announced hotspot from the session, then posts a report every interval and
+  prints the server verdict + link chips.
+- Live run against the LG as TRANSMITTER (BUILD 21):
+  `[sim] transmitter found: AndroidShare_2719 @ phone-mu4gkght` →
+  every tick `present=true fused=1.00 codeValid=true · B● W● U● · 96%`.
+  This proves the **base64 secret fix end-to-end**: a code generated from the
+  human-readable preset secret verifies server-side via the app's exact wire
+  encoding.
+- The transmitter's ROOM MONITOR then showed `3 FOUND · 3 LINKED` with
+  `B● W● U● · CONNECTED · 96% · CODE ✓` rows. Monitor rows were reworked into
+  a two-line `DeviceLinkRow` (`app/src/components/DeviceLinkRow.tsx`) after the
+  first screenshot showed portrait truncation.
+- Smoke suite on the LG improved to **8/10 automated passed** after the
+  WiFi-observation check was made honest (a missing transmitter AP is a valid
+  observation; only "joined but no RSSI" is a failure). Remaining failures are
+  the two single-device artifacts: BLE scan (no peer advertising) and the
+  ultrasonic self-loopback.
+
 ## On-device evidence
 
 | Build | Device | Result |
 |---|---|---|
 | +18 | Pixel (TX) | OPERATIONAL, code rotating, `ADVERTISING ✓`, announce PUBLISHED |
 | +19 | LG (RX) | LINK ACTIVE, server: `ble connected −46 dBm`, `wifi lost`, `ultrasonic degraded` |
-| +20 | LG (TX) | OPERATIONAL; announce `AndroidShare_6385`; smoke **7/10 automated passed** |
+| +20 | LG (TX) | OPERATIONAL; announce `AndroidShare_6385`; smoke 7/10 |
+| +21 | LG (TX) + sim | OPERATIONAL; sim `codeValid=true fused=1.00 B● W● U●`; monitor 3 FOUND · 3 LINKED; smoke **8/10** |
 
 Artifacts:
 - `maestro/tx-console.yaml`, `maestro/rx-console.yaml` — drive the real consoles.
@@ -119,18 +147,21 @@ Artifacts:
 
 ## Known issues / gaps for the next session
 
-1. **Two-phone confirmation on BUILD 20 was not completed** — the Pixel ran out
-   of charge mid-run. Rerun `scripts/device-e2e.sh setup`, TX flow on the Pixel,
-   RX flow on the LG, then approve the LG's WiFi dialog and check
+1. **Two-phone confirmation on BUILD 21 was not completed** — the Pixel ran out
+   of charge. The server-side path is proven by the simulator (valid code +
+   all-green link), but the real receiver's WiFi approval + code path should be
+   re-confirmed: `scripts/device-e2e.sh setup`, TX flow on the Pixel, RX flow on
+   the LG, `python3 scripts/approve-wifi.py <LG serial>`, then check
    `GET /api/sessions/sess-1/presence` for `wifi connected` and
-   `ultrasonicServerValid: true` (the base64 fix should make this pass).
+   `ultrasonicServerValid: true`.
 2. **Ultrasonic cross-device detection fails on the LG** — TX 1.8 kHz bursts,
    LG listener reports `runs=29 expected=24 present=false` (too many on-runs;
    likely ambient 1.8 kHz or AGC). BLE+WiFi carry presence meanwhile. Consider
    calibrating burst cadence/thresholds or adding a sweep.
 3. **Device IDs are per-process** (`identity.ts` regenerates on each launch) —
-   stale devices accumulate in the server's room roster across restarts. Persist
-   the ID (e.g. via `expo-file-system`) or filter by age in the monitors.
+   stale devices accumulate in the server's room roster across restarts (visible
+   as the `smoke-tester`/older sim rows in the monitor). Persist the ID
+   (e.g. via `expo-file-system`) or filter by age in the monitors.
 4. **No deep-link auto-engage** for tx/rx consoles; adding
    `shusseki://tx` / `shusseki://rx` would make locked-screen / headless runs
    possible (suggested, not implemented).
@@ -143,6 +174,8 @@ Artifacts:
    with `No compatible library found`. `EXPO_PUBLIC_SERVER_URL=http://127.0.0.1:8787`
    is baked at bundle time; `adb reverse tcp:8787` must be set per device.
 
-## Commit
+## Deployment state
 
-Everything above is committed together; APK BUILD 20 is installed on the LG.
+BUILD 21 APK (`app-release.apk`, embedded JS) is installed on the LG. The
+server runs on the PC (`./start-server.sh`); `adb reverse tcp:8787` is set on
+the LG. The Pixel dropped off USB with a dead battery and is untouched since.

@@ -7,10 +7,10 @@ import { SoshinController, type SoshinConfig } from "./lib/modes/soshin";
 import { announceHotspot, ensureSession } from "./lib/server";
 import { useSessionPresence } from "./lib/useSessionPresence";
 import { roleLabel } from "./lib/roles";
-import { formatAge, linkChips, linkGlyph, linkStateLabel } from "./lib/linkView";
 import { DEVICE_ID } from "./identity";
 import { VERSION } from "./version";
 import { colors, MONO, spacing, text } from "./theme";
+import { DeviceLinkRow } from "./components/DeviceLinkRow";
 import {
   AlertOverlay,
   BloomField,
@@ -312,28 +312,27 @@ export default function SoshinScreen({
                   same room preset, then it reports here every few seconds.
                 </Text>
               ) : (
-                devices.map((d) => {
-                  const tone = d.link ? (d.link.state === "connected" ? colors.green : d.link.state === "degraded" ? colors.amber : colors.red) : colors.dim;
-                  const short = d.deviceId.length > 10 ? `…${d.deviceId.slice(-8)}` : d.deviceId;
-                  return (
-                    <ValueRow
-                      key={d.deviceId}
-                      k={`${d.present ? "●" : "○"} ${short} · ${roleLabel(d.mode)}`}
-                      v={`${linkChips(d.link)} · ${linkStateLabel(d.link?.state ?? "lost")} · ${Math.round((d.link?.quality ?? 0) * 100)}% · ${formatAge(d.timestamp, Date.now())} ago`}
-                      tone={tone}
-                      labelWidth={220}
-                      onPress={() =>
-                        setAlert({
-                          title: d.present ? "UNIT LINKED" : "UNIT WEAK",
-                          jp: "個機状態",
-                          sub: `${roleLabel(d.mode)} · ${short}`,
-                          detail: JSON.stringify(d, null, 2),
-                          tone,
-                        })
-                      }
-                    />
-                  );
-                })
+                devices.map((d) => (
+                  <DeviceLinkRow
+                    key={d.deviceId}
+                    device={d}
+                    now={Date.now()}
+                    onPress={() =>
+                      setAlert({
+                        title: d.present ? "UNIT LINKED" : "UNIT WEAK",
+                        jp: "個機状態",
+                        sub: `${roleLabel(d.mode)} · ${d.deviceId}`,
+                        detail: JSON.stringify(d, null, 2),
+                        tone:
+                          d.link?.state === "connected"
+                            ? colors.green
+                            : d.link?.state === "degraded"
+                              ? colors.amber
+                              : colors.red,
+                      })
+                    }
+                  />
+                ))
               )}
             </Panel>
           </View>

@@ -180,7 +180,7 @@ User feedback round: "no grey lines", "popups missing", "plastered boxes",
 
 Full narrative: `docs/session-2026-09-17-report.md`.
 
-**Delivered (110 tests, BUILD 20 APK on the LG):**
+**Delivered (114 tests, BUILD 21 APK on the LG):**
 - Plain-language roles: TRANSMITTER (Soshin) / RECEIVER (Jushin) everywhere an
   operator looks — home tiles, console headers, monitors, alerts, docs
   (`app/src/lib/roles.ts`, `CONTEXT.md`, `README.md`).
@@ -195,16 +195,24 @@ Full narrative: `docs/session-2026-09-17-report.md`.
 - Fixed on-device bugs: **base64 secret mismatch** (codes always rejected),
   missing `CHANGE_NETWORK_STATE`, BLE scan `ConcurrentModificationException`,
   dishonest WiFi RSSI, non-idempotent hotspot re-engage.
+- **Single-phone demo path**: `shared/src/simulator.ts` + `npm run sim:rx`
+  posts exact receiver-shaped reports (valid rolling code) and prints the
+  server verdict — spot-checked on BUILD 21: `codeValid=true fused=1.00
+  B● W● U● · 96%`, transmitter monitor `3 FOUND · 3 LINKED`. Smoke suite now
+  **8/10** (only the two single-device artifacts fail: BLE scan with no peer,
+  ultrasonic self-loopback).
+- Monitor rows reworked to a two-line `DeviceLinkRow` so chips/quality/age no
+  longer truncate in portrait.
 
 **Next session — do these in order:**
-1. **Finish the two-phone pass on BUILD 20** (Pixel battery died mid-run):
+1. **Finish the two-phone pass on BUILD 21** (Pixel battery died):
    - `scripts/device-e2e.sh setup` → `maestro --device <Pixel> test maestro/tx-console.yaml`
      → `maestro --device <LG> test maestro/rx-console.yaml`
      → `python3 scripts/approve-wifi.py <LG serial>` (Android 10 asks for
      approval before joining the hotspot).
    - Success gate: `GET /api/sessions/sess-1/presence` shows the receiver with
-     `wifi: connected` and `ultrasonicServerValid: true` (the base64 fix should
-     make the second one pass), and the TX ROOM MONITOR lists it with chips.
+     `wifi: connected` and `ultrasonicServerValid: true` (server path already
+     proven by `npm run sim:rx`), and the TX ROOM MONITOR lists it with chips.
 2. **Ultrasonic cross-device tuning**: LG listener sees `runs=29` vs the
    expected burst cadence (`present=false`). Inspect
    `ShussekiUltrasonicModule.kt` burst params (`stampFreq 1800`, `bursts`,

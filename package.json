@@ -13,6 +13,7 @@
     "test": "vitest run",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "dev:server": "npm run dev -w server",
+    "sim:rx": "tsx scripts/simulate-receiver.ts",
     "lint": "biome check ."
   },
   "devDependencies": {

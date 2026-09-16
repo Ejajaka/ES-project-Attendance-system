@@ -1,11 +1,13 @@
 # session.md — context for the next agent
 
-> **Latest session (2026-09-17, BUILD 20):** role rename to
+> **Latest session (2026-09-17, BUILD 21):** role rename to
 > TRANSMITTER/RECEIVER (Soshin/Jushin kept as brand), 3 preset rooms, hotspot
 > auto-join, and three-channel link stats (BLE/WiFi/ultrasonic) — delivered
-> with TDD (110 tests). Full report: `docs/session-2026-09-17-report.md`.
-> Next steps: `todo.md` §P10 (notably: finish the two-phone pass on BUILD 20
-> and tune cross-device ultrasonic detection).
+> with TDD (114 tests). A simulated receiver (`npm run sim:rx`) verifies the
+> full server pipeline with one phone (code verified, all channels green).
+> Full report: `docs/session-2026-09-17-report.md`. Next steps: `todo.md` §P10
+> (notably: finish the two-phone pass on BUILD 21 and tune cross-device
+> ultrasonic detection).
 
 Session goal: get Shusseki (room-level attendance via BLE + WiFi + ultrasonic
 fusion) into a **working Android release APK that runs on the emulator**, and
