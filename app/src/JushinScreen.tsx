@@ -63,10 +63,12 @@ interface LocalConfidence {
 export default function JushinScreen({
   settings,
   serverUrl,
+  autoEngage,
   onExit,
 }: {
   settings: Settings;
   serverUrl: string;
+  autoEngage?: boolean;
   onExit: () => void;
 }) {
   const [running, setRunning] = useState(false);
@@ -114,6 +116,8 @@ export default function JushinScreen({
       const reporter = new HttpReporter(serverUrl);
       const config: JushinConfig = {
         deviceId: DEVICE_ID,
+        studentId: settings.studentId || undefined,
+        studentName: settings.studentName || undefined,
         roomId: settings.roomId,
         sessionId: settings.sessionId,
         soshinSsid: ssid,
@@ -203,6 +207,17 @@ export default function JushinScreen({
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
   }, []);
+
+  // Headless auto-engage (deep link `shusseki://rx`) — start once on mount so
+  // the receiver can be driven without UI taps.
+  const autoStartedRef = useRef(false);
+  useEffect(() => {
+    if (autoEngage && !autoStartedRef.current) {
+      autoStartedRef.current = true;
+      void start();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoEngage]);
 
   const uptime = startedAt ? Math.round((Date.now() - startedAt) / 1000) : 0;
   const sp = lastResult?.presence ?? null;

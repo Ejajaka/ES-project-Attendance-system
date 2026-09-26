@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import type { DeviceReport, GroundTruth } from "shared";
+import { ATTENDANCE_MAX_GAP_MS, type DeviceReport, type GroundTruth } from "shared";
 import { MemoryStore } from "./store";
 
 function report(deviceId: string, ts: number): DeviceReport {
@@ -41,4 +41,33 @@ test("ground truth is stored and retrievable per session", () => {
   };
   s.addGroundTruth(gt);
   expect(s.groundTruthForSession("s1")).toEqual([gt]);
+});
+
+test("recordSample tracks first/last seen and credits present gaps", () => {
+  const s = new MemoryStore();
+  s.recordSample("s1", "d1", "bl.1", 1000, true);
+  s.recordSample("s1", "d1", "bl.1", 6000, true);
+  s.recordSample("s1", "d1", "bl.1", 11000, false);
+  const [t] = s.timelinesForSession("s1");
+  expect(t!.firstSeen).toBe(1000);
+  expect(t!.lastSeen).toBe(11000);
+  expect(t!.presentMs).toBe(5000); // only the present→present gap
+  expect(t!.samples).toBe(3);
+  expect(t!.present).toBe(false);
+  expect(t!.studentId).toBe("bl.1");
+});
+
+test("recordSample caps a long gap so an absence is not credited as present", () => {
+  const s = new MemoryStore();
+  s.recordSample("s1", "d1", undefined, 0, true);
+  s.recordSample("s1", "d1", undefined, ATTENDANCE_MAX_GAP_MS + 1, true);
+  expect(s.timelinesForSession("s1")[0]!.presentMs).toBe(0);
+});
+
+test("roster is stored and retrievable per session", () => {
+  const s = new MemoryStore();
+  expect(s.rosterForSession("s1")).toEqual([]);
+  s.setRoster("s1", [{ studentId: "bl.1", name: "Ada" }]);
+  expect(s.rosterForSession("s1")).toHaveLength(1);
+  expect(s.rosterForSession("other")).toHaveLength(0);
 });

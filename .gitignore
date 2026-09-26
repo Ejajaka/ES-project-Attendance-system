@@ -34,6 +34,10 @@ npm-debug.log*
 /evaluation/runs/
 *.csv.tmp
 
+# Server runtime persistence (JSON store written when SHUSSEKI_DATA is set)
+/server/store.json
+/server/*.log
+
 # Editor
 .vscode/
 .idea/

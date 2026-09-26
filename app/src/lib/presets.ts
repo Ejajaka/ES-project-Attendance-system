@@ -81,6 +81,8 @@ export const DEFAULT_SETTINGS: Settings = applyPreset(
     soshinSsid: "",
     soshinPass: "",
     secret: "",
+    studentId: "",
+    studentName: "",
   },
   "1",
 );

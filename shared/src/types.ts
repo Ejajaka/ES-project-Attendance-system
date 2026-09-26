@@ -75,6 +75,10 @@ export type BiometricCheck = z.infer<typeof BiometricCheckSchema>;
 /** Envelope a Device sends to the Server. */
 export const DeviceReportSchema = z.object({
   deviceId: z.string(),
+  /** Optional student identity (roll number) bound to this device. */
+  studentId: z.string().optional(),
+  /** Optional human name reported by the phone (auto-enrolls the roster). */
+  studentName: z.string().optional(),
   mode: ModeSchema,
   roomId: z.string(),
   sessionId: z.string(),

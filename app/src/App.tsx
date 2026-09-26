@@ -44,7 +44,9 @@ type Mode = "none" | "soshin" | "jushin" | "smoke" | "e2e";
 /** Deep-linking target parsed from `shusseki://<path>?<query>`. */
 type Launch =
   | { screen: "smoke"; autoRun?: string }
-  | { screen: "e2e"; role: E2eRole };
+  | { screen: "e2e"; role: E2eRole }
+  | { screen: "jushin"; autoEngage: true; studentId?: string; studentName?: string }
+  | { screen: "soshin"; autoEngage: true };
 
 function parseLaunch(url: string | null): Launch | null {
   if (!url || !url.startsWith("shusseki://")) return null;
@@ -60,6 +62,17 @@ function parseLaunch(url: string | null): Launch | null {
     const role = (params["role"] ?? "both") as E2eRole;
     return { screen: "e2e", role };
   }
+  // Headless console auto-engage (adb/maestro driven): shusseki://rx | shusseki://tx.
+  // `rx` also accepts identity: shusseki://rx?roll=bl.1&name=Ada%20Lovelace
+  if (path === "rx") {
+    return {
+      screen: "jushin",
+      autoEngage: true,
+      studentId: params["roll"] || params["studentId"] || undefined,
+      studentName: params["name"] || undefined,
+    };
+  }
+  if (path === "tx") return { screen: "soshin", autoEngage: true };
   return null;
 }
 
@@ -80,6 +93,13 @@ export default function App() {
     const onUrl = (url: string | null) => {
       const l = parseLaunch(url);
       if (!l) return;
+      if (l.screen === "jushin" && (l.studentId || l.studentName)) {
+        setSettings((s) => ({
+          ...s,
+          studentId: l.studentId ?? s.studentId,
+          studentName: l.studentName ?? s.studentName,
+        }));
+      }
       setLaunch(l);
       setMode(l.screen);
     };
@@ -124,10 +144,20 @@ export default function App() {
           <View style={styles.shell}>
             {mode !== "smoke" && <SettingsPanel settings={settings} onChange={setSettings} />}
             {mode === "soshin" && (
-              <SoshinScreen settings={settings} serverUrl={settings.serverUrl} onExit={() => setMode("none")} />
+              <SoshinScreen
+                settings={settings}
+                serverUrl={settings.serverUrl}
+                autoEngage={launch?.screen === "soshin" ? launch.autoEngage : false}
+                onExit={() => setMode("none")}
+              />
             )}
             {mode === "jushin" && (
-              <JushinScreen settings={settings} serverUrl={settings.serverUrl} onExit={() => setMode("none")} />
+              <JushinScreen
+                settings={settings}
+                serverUrl={settings.serverUrl}
+                autoEngage={launch?.screen === "jushin" ? launch.autoEngage : false}
+                onExit={() => setMode("none")}
+              />
             )}
             {mode === "smoke" && (
               <SmokeScreen
@@ -371,6 +401,16 @@ function SettingsPanel({
       {open && (
         <>
           <Field label="SERVER URL" value={settings.serverUrl} onChange={(v) => onChange({ ...settings, serverUrl: v })} />
+          <Field
+            label="STUDENT ID (ROLL NO)"
+            value={settings.studentId}
+            onChange={(v) => onChange({ ...settings, studentId: v })}
+          />
+          <Field
+            label="STUDENT NAME"
+            value={settings.studentName}
+            onChange={(v) => onChange({ ...settings, studentName: v })}
+          />
           <Field
             label="HOTSPOT SSID (FALLBACK)"
             value={settings.soshinSsid}

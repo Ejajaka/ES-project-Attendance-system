@@ -3,6 +3,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { NativeSensors } from "./lib/nativeSensors";
 import { E2eController, type E2eRole } from "./lib/modes/e2e";
 import { roleLabel } from "./lib/roles";
+import { DEVICE_ID } from "./identity";
 import type { Settings } from "./settings";
 import { colors, spacing, text } from "./theme";
 import {
@@ -114,7 +115,8 @@ export default function E2eScreen({
         sensors,
         {
           role,
-          deviceId: "e2e-" + (role === "both" ? "tester" : role),
+          // Unique per phone so two receivers don't collapse into one roster entry.
+          deviceId: `${DEVICE_ID}-${role}`,
           roomId: settings.roomId,
           sessionId: settings.sessionId,
           secret: settings.secret,

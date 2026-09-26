@@ -149,6 +149,101 @@ test("GET presence 404s for an unknown session", async () => {
   expect(res.status).toBe(404);
 });
 
+test("attendance: roster + reports produce a sheet, CSV and HTML", async () => {
+  const app = makeApp();
+  await app.request("/api/sessions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId: "s1", roomId: "r1", secret: SECRET_B64 }),
+  });
+
+  const roster = await app.request("/api/sessions/s1/roster", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      students: [
+        { studentId: "bl.1", name: "Ada" },
+        { studentId: "bl.2", name: "Bob" },
+      ],
+    }),
+  });
+  expect(roster.status).toBe(201);
+
+  const code = generateTOTP(SECRET, ALIGNED, { step: 30 });
+  const p = { ...reportPayload(code), studentId: "bl.1", deviceId: "phone-ada" };
+  await app.request("/api/reports", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(p),
+  });
+  await app.request("/api/reports", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ...p, timestamp: ALIGNED + 5000 }),
+  });
+
+  const att = await app.request("/api/sessions/s1/attendance");
+  expect(att.status).toBe(200);
+  const sheet = await att.json();
+  expect(sheet.rosterCount).toBe(2);
+  expect(sheet.presentCount).toBe(1);
+  const ada = sheet.rows.find((r: { studentId: string }) => r.studentId === "bl.1");
+  expect(ada.present).toBe(true);
+  expect(ada.presentMs).toBe(5000);
+  expect(sheet.rows.find((r: { studentId: string }) => r.studentId === "bl.2").present).toBe(
+    false,
+  );
+
+  const csv = await app.request("/api/sessions/s1/attendance?format=csv");
+  expect(csv.headers.get("content-type")).toContain("text/csv");
+  expect(await csv.text()).toContain("Ada");
+
+  const html = await app.request("/attendance/s1");
+  expect(html.headers.get("content-type")).toContain("text/html");
+  expect(await html.text()).toContain("Shusseki attendance");
+});
+
+test("attendance endpoints 404 for unknown sessions; bad roster 400s", async () => {
+  const app = makeApp();
+  expect((await app.request("/api/sessions/nope/attendance")).status).toBe(404);
+  expect((await app.request("/attendance/nope")).status).toBe(404);
+
+  await app.request("/api/sessions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId: "s1", roomId: "r1", secret: SECRET_B64 }),
+  });
+  const bad = await app.request("/api/sessions/s1/roster", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ students: [{ name: "no id" }] }),
+  });
+  expect(bad.status).toBe(400);
+});
+
+test("a report with studentId auto-enrolls the roster", async () => {
+  const app = makeApp();
+  await app.request("/api/sessions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId: "s1", roomId: "r1", secret: SECRET_B64 }),
+  });
+  const code = generateTOTP(SECRET, ALIGNED, { step: 30 });
+  await app.request("/api/reports", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      ...reportPayload(code),
+      deviceId: "phone-zed",
+      studentId: "bl.9",
+      studentName: "Zed",
+    }),
+  });
+  const roster = await app.request("/api/sessions/s1/roster");
+  const { students } = await roster.json();
+  expect(students).toEqual([{ studentId: "bl.9", name: "Zed" }]);
+});
+
 test("GET /api/sessions/:id/evaluate reports room-level count error", async () => {
   const app = makeApp();
   await app.request("/api/sessions", {

@@ -8,6 +8,10 @@ export interface Settings {
   presetId: "1" | "2" | "3";
   roomId: string;
   sessionId: string;
+  /** Roll number of the student carrying this phone (attendance identity). */
+  studentId: string;
+  /** Full name of the student (auto-enrolls the attendance roster). */
+  studentName: string;
   /** SSID hint; the live AutoHotspot SSID comes from the server announce. */
   soshinSsid: string;
   /** WPA passphrase of the transmitter hotspot (empty = open/discover). */

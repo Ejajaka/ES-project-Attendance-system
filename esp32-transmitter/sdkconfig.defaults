@@ -14,3 +14,11 @@ CONFIG_BT_CONTROLLER_ENABLED=y
 # WiFi + BLE software coexistence: the SoftAP serves receivers while BLE advertises.
 CONFIG_ESP_COEX_ENABLED=y
 CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y
+
+# WPA2-Enterprise (802.1X / EAP-PEAP) STA support, to join the campus WiFi.
+CONFIG_ESP_WIFI_ENTERPRISE_SUPPORT=y
+
+# IP forwarding + NAT so phones joined to the SoftAP can reach the fusion server
+# on the STA-side network (wire-free topology: phone -> room AP -> hotspot -> PC).
+CONFIG_LWIP_IP_FORWARD=y
+CONFIG_LWIP_IPV4_NAPT=y

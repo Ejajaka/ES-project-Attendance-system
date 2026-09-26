@@ -48,10 +48,12 @@ function fmtClock(s: number): string {
 export default function SoshinScreen({
   settings,
   serverUrl,
+  autoEngage,
   onExit,
 }: {
   settings: Settings;
   serverUrl: string;
+  autoEngage?: boolean;
   onExit: () => void;
 }) {
   const [running, setRunning] = useState(false);
@@ -201,6 +203,16 @@ export default function SoshinScreen({
       if (tickRef.current) clearInterval(tickRef.current);
     };
   }, []);
+
+  // Headless auto-engage (deep link `shusseki://tx`) — start once on mount.
+  const autoStartedRef = useRef(false);
+  useEffect(() => {
+    if (autoEngage && !autoStartedRef.current) {
+      autoStartedRef.current = true;
+      void start();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoEngage]);
 
   const countdown =
     running && nextAt != null ? Math.max(0, Math.round((nextAt - Date.now()) / 1000)) : 0;

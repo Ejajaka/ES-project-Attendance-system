@@ -25,6 +25,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "sdkconfig.h"
 #include "esp_system.h"
 #include "esp_event.h"
 #include "esp_log.h"
@@ -33,6 +34,9 @@
 #include "esp_netif_sntp.h"
 #include "esp_http_client.h"
 #include "nvs_flash.h"
+#if CONFIG_ESP_WIFI_ENTERPRISE_SUPPORT
+#include "esp_eap_client.h"
+#endif
 
 #include "driver/ledc.h"
 
@@ -42,13 +46,16 @@
 
 static const char *TAG = "shusseki-tx";
 
+/** SoftAP netif, kept so we can enable NAT (AP clients -> server) on STA-up. */
+static esp_netif_t *s_ap_netif = NULL;
+
 /* ------------------------------------------------------------------ CONFIG */
 
 /** Stable node id advertised in the BLE beacon (shown in the receiver's link view). */
 #define NODE_ID "esp32-tx1"
 
-/** Fusion server base URL. Reachable from the ESP32's network. */
-#define SERVER_URL "http://192.168.29.227:8787"
+/** Fusion server base URL. Reachable from the ESP32's network (the dev laptop). */
+#define SERVER_URL "http://192.168.137.1:8787"
 
 /* Preset ROOM 01 — must match app/src/lib/presets.ts (room/session/secret). */
 #define PRESET_ROOM_ID "room-1"
@@ -60,11 +67,17 @@ static const char *TAG = "shusseki-tx";
 #define AP_PASS "shusseki123"
 
 /**
- * Optional: join an existing WiFi that has internet so the clock can NTP-sync.
- * Leave empty to fall back to the build-time clock seed (DEV_SEED_EPOCH).
+ * Join an existing WiFi so the clock can NTP-sync and the ESP32 can reach the
+ * fusion server on the same LAN. Leave STA_SSID empty to fall back to the
+ * build-time clock seed (DEV_SEED_EPOCH).
+ *
+ * WPA2-Personal hotspot: set SSID + password.
+ * WPA2-Enterprise (802.1X): set STA_ENTERPRISE 1 + STA_USERNAME.
  */
-#define STA_SSID ""
-#define STA_PASS ""
+#define STA_SSID "Shusseki-Room"
+#define STA_PASSWORD "shusseki123"
+#define STA_USERNAME ""
+#define STA_ENTERPRISE 0
 
 #define TOTP_STEP_S 30
 
@@ -360,9 +373,17 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id,
         ESP_LOGI(TAG, "SoftAP up: ssid=\"%s\" pass=\"%s\"", AP_SSID, AP_PASS);
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
+    } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+        wifi_event_sta_disconnected_t *e = (wifi_event_sta_disconnected_t *)data;
+        ESP_LOGW(TAG, "STA disconnected, reason=%d — retrying", e->reason);
+        esp_wifi_connect();
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *e = (ip_event_got_ip_t *)data;
         ESP_LOGI(TAG, "STA got IP " IPSTR, IP2STR(&e->ip_info.ip));
+        // Route SoftAP clients out through the STA network (reaches the server).
+        if (s_ap_netif && esp_netif_napt_enable(s_ap_netif) == ESP_OK) {
+            ESP_LOGI(TAG, "NAPT enabled on SoftAP");
+        }
     }
 }
 
@@ -371,6 +392,7 @@ static void wifi_init(void)
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     esp_netif_create_default_wifi_ap();
+    s_ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
 
     bool use_sta = strlen(STA_SSID) > 0;
     if (use_sta) {
@@ -394,35 +416,55 @@ static void wifi_init(void)
     wifi_config_t sta = {0};
     if (use_sta) {
         strncpy((char *)sta.sta.ssid, STA_SSID, sizeof(sta.sta.ssid));
-        strncpy((char *)sta.sta.password, STA_PASS, sizeof(sta.sta.password));
+#if STA_ENTERPRISE
+        sta.sta.threshold.authmode = WIFI_AUTH_WPA2_ENTERPRISE;
+#else
+        strncpy((char *)sta.sta.password, STA_PASSWORD, sizeof(sta.sta.password));
+        sta.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+#endif
     }
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(use_sta ? WIFI_MODE_APSTA : WIFI_MODE_AP));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap));
     if (use_sta) {
         ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta));
+#if STA_ENTERPRISE && CONFIG_ESP_WIFI_ENTERPRISE_SUPPORT
+        esp_eap_client_set_identity((const unsigned char *)STA_USERNAME,
+                                    (int)strlen(STA_USERNAME));
+        esp_eap_client_set_username((const unsigned char *)STA_USERNAME,
+                                    (int)strlen(STA_USERNAME));
+        esp_eap_client_set_password((const unsigned char *)STA_PASSWORD,
+                                    (int)strlen(STA_PASSWORD));
+        esp_eap_client_set_eap_methods(ESP_EAP_TYPE_PEAP);
+        ESP_ERROR_CHECK(esp_wifi_sta_enterprise_enable());
+#endif
     }
     ESP_ERROR_CHECK(esp_wifi_start());
 }
 
 static void time_init(void)
 {
+    bool synced = false;
     if (strlen(STA_SSID) > 0) {
         esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
         esp_netif_sntp_init(&cfg);
         ESP_LOGI(TAG, "waiting for SNTP...");
-        if (esp_netif_sntp_sync_wait(pdMS_TO_TICKS(15000)) == ESP_OK) {
+        if (esp_netif_sntp_sync_wait(pdMS_TO_TICKS(35000)) == ESP_OK) {
+            synced = true;
             ESP_LOGI(TAG, "SNTP synced");
         } else {
             ESP_LOGW(TAG, "SNTP did not sync in time");
         }
-    } else if (DEV_SEED_EPOCH > 0) {
-        struct timeval tv = {.tv_sec = (time_t)DEV_SEED_EPOCH, .tv_usec = 0};
-        settimeofday(&tv, NULL);
-        ESP_LOGW(TAG, "clock seeded from build time (%ld) — no NTP",
-                 (long)DEV_SEED_EPOCH);
-    } else {
-        ESP_LOGW(TAG, "no time source; rolling codes will use an epoch-0 counter");
+    }
+    if (!synced) {
+        if (DEV_SEED_EPOCH > 0) {
+            struct timeval tv = {.tv_sec = (time_t)DEV_SEED_EPOCH, .tv_usec = 0};
+            settimeofday(&tv, NULL);
+            ESP_LOGW(TAG, "clock seeded from build time (%ld) — no NTP",
+                     (long)DEV_SEED_EPOCH);
+        } else {
+            ESP_LOGW(TAG, "no time source; rolling codes use an epoch-0 counter");
+        }
     }
 }
 
@@ -491,6 +533,46 @@ static void announce_session(void)
              http_post_json("/api/sessions/" PRESET_SESSION_ID "/hotspot", body));
 }
 
+/** Room-side "receive": fetch the server's presence roster and report the count. */
+static void poll_presence(void)
+{
+    char url[192];
+    snprintf(url, sizeof(url), "%s/api/sessions/%s/presence", SERVER_URL,
+             PRESET_SESSION_ID);
+
+    esp_http_client_config_t cfg = {
+        .url = url,
+        .method = HTTP_METHOD_GET,
+        .timeout_ms = 5000,
+    };
+    esp_http_client_handle_t c = esp_http_client_init(&cfg);
+    if (!c) {
+        return;
+    }
+    char body[2048];
+    int total = 0;
+    if (esp_http_client_open(c, 0) == ESP_OK) {
+        esp_http_client_fetch_headers(c);
+        int n;
+        while ((n = esp_http_client_read(c, body + total,
+                                         (int)sizeof(body) - 1 - total)) > 0) {
+            total += n;
+            if (total >= (int)sizeof(body) - 1) {
+                break;
+            }
+        }
+    }
+    body[total] = '\0';
+    int present = 0;
+    for (const char *p = body; (p = strstr(p, "\"present\":true")) != NULL; p++) {
+        present++;
+    }
+    ESP_LOGI(TAG, "[room] session=%s present_devices=%d", PRESET_SESSION_ID,
+             present);
+    esp_http_client_close(c);
+    esp_http_client_cleanup(c);
+}
+
 static void transmitter_task(void *arg)
 {
     char code[7];
@@ -502,6 +584,7 @@ static void transmitter_task(void *arg)
     announce_session();
 
     uint64_t last_step = UINT64_MAX;
+    int loops = 0;
     for (;;) {
         time_t now = time(NULL);
         uint64_t step = (uint64_t)now / TOTP_STEP_S;
@@ -512,6 +595,15 @@ static void transmitter_task(void *arg)
             ESP_LOGI(TAG, "[tx] unix=%ld step=%llu code=%s", (long)now,
                      (unsigned long long)step, code);
             ble_advertise_code(code);
+        }
+
+        if (++loops % 12 == 0) {
+            poll_presence();
+        }
+        if (loops % 24 == 0) {
+            // Re-announce periodically so a server restart doesn't drop the
+            // session/hotspot registration (the server is an in-memory store).
+            announce_session();
         }
 
         ultrasonic_burst();
