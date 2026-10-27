@@ -8,8 +8,8 @@
  *      room secret — the same algorithm as shared/src/rollingCode.ts.
  *   2. Advertises it over BLE as manufacturer data `<nodeId>|<code>` under
  *      company id 0xABCD — the exact payload ShussekiBleModule.kt parses.
- *   3. Raises a SoftAP for the receiver to join, and announces its SSID to the
- *      fusion server so the receiver can auto-join (POST /api/sessions/:id/hotspot).
+ *   3. Raises the fixed open `atlas` SoftAP (no password) for the receiver to
+ *      join, and announces its SSID to the fusion server.
  *   4. Emits the 1.8 kHz burst presence stamp on LEDC pin ULTRASONIC_GPIO.
  *
  * Tune the CONFIG block below per room. The server must be reachable from the
@@ -62,9 +62,9 @@ static esp_netif_t *s_ap_netif = NULL;
 #define PRESET_SESSION_ID "sess-1"
 #define PRESET_SECRET "shusseki-preset-1-secret"
 
-/* SoftAP that receivers auto-join (announced to the server, so any name works). */
-#define AP_SSID "Shusseki-ESP32"
-#define AP_PASS "shusseki123"
+/* SoftAP: fixed open `atlas` network (no password) that phones join directly. */
+#define AP_SSID "atlas"
+#define AP_PASS ""
 
 /**
  * Join an existing WiFi so the clock can NTP-sync and the ESP32 can reach the
@@ -370,7 +370,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id,
                                void *data)
 {
     if (base == WIFI_EVENT && id == WIFI_EVENT_AP_START) {
-        ESP_LOGI(TAG, "SoftAP up: ssid=\"%s\" pass=\"%s\"", AP_SSID, AP_PASS);
+        ESP_LOGI(TAG, "SoftAP up: ssid=\"%s\" (open, no password)", AP_SSID);
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
@@ -411,7 +411,8 @@ static void wifi_init(void)
     ap.ap.ssid_len = strlen(AP_SSID);
     strncpy((char *)ap.ap.password, AP_PASS, sizeof(ap.ap.password));
     ap.ap.max_connection = 4;
-    ap.ap.authmode = WIFI_AUTH_WPA2_PSK;
+    /* Open network: WIFI_AUTH_OPEN + empty password = no password prompt. */
+    ap.ap.authmode = WIFI_AUTH_OPEN;
 
     wifi_config_t sta = {0};
     if (use_sta) {
