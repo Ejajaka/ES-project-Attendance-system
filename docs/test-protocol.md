@@ -21,7 +21,7 @@ Lock these *before* collecting real data — they are expensive to redo:
 ## Positive cases (true presence)
 For each modality, confirm it *fires* when the person is genuinely in the room:
 - **BLE:** person stands at centre, near each wall, and at the doorway-inside.
-- **WiFi:** person connected to the Soshin hotspot at varying distances.
+- **WiFi:** person joined to the open `atlas` network at varying distances.
 - **Ultrasonic:** person within Soshin speaker range (quiet vs noisy room).
 - **Fused:** all of the above — expect equal-or-better recall than any single
   modality (see `evaluation/run-sample.ts`).
@@ -36,7 +36,7 @@ open doors:
   expect *not in this room*.
 - **Open-door bleed** — door open between room and corridor with a device just
   outside; especially stresses ultrasonic + BLE.
-- **Far but connected** — device on the Soshin WiFi from a distant spot (WiFi
+- **Far but connected** — device on `atlas` from a distant spot (WiFi
   reach > room); expect WiFi to be wrong unless combined with BLE/ultrasonic.
 
 Record, per negative case, *why* a signal was missed/accepted:

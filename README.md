@@ -89,12 +89,14 @@ cd app
 npx expo start          # then run on Android/iOS
 ```
 Pick **TRANSMITTER** (room-side, brand Soshin: broadcasts the ultrasonic code
-+ BLE beacon) or **RECEIVER** (phone-side, brand Jushin: connects to the
-transmitter's WiFi, listens for the code, reports BLE/WiFi). Both devices pick
-the same **preset room** (3 available), which pins roomId, sessionId, SSID hint
-and rolling-code secret; the transmitter announces its live AutoHotspot and
-receivers auto-join it. Set `EXPO_PUBLIC_SERVER_URL` to point at the fusion
-server (default `http://10.0.2.2:8787` for the Android emulator).
++ BLE beacon) or **RECEIVER** (phone-side, brand Jushin: joins the open
+`atlas` WiFi network, listens for the code, reports BLE/WiFi). Both devices
+pick the same **preset room** (3 available), which pins roomId, sessionId, and
+rolling-code secret. WiFi is shared: the ESP32 room node hosts `atlas` with no
+password, and every phone joins it. The transmitter can still raise a
+LocalOnlyHotspot as a two-phone demo fallback. Set `EXPO_PUBLIC_SERVER_URL` to
+point at the fusion server (default `http://10.0.2.2:8787` for the Android
+emulator).
 
 > The app's transmitter/receiver **logic** is fully unit-tested with
 > `MockSensors` (Vitest). The native modules (`modules/expo-shusseki-*`) are the
@@ -105,7 +107,9 @@ The UI is a dense NERV-style developer console for researchers, not a consumer
 app — every screen dumps raw sensor values, per-modality + fused confidences,
 server verdicts with RTT, roll code state, and a **ROOM MONITOR** that lists
 *every* device currently reporting to the session (so one phone shows the other's
-presence). Each monitor row carries the device's three-channel **link stats**
+presence). The receiver console also draws a **live BLE/WiFi RSSI trace**
+(5 s poll, 10 min window), so you can walk the phone away and watch the signal
+fall. Each monitor row carries the device's three-channel **link stats**
 (`B● W◐ U○` + quality + age): the receiver sees its own link to the
 transmitter, and the transmitter sees every receiver's link back to it.
 Japanese labels (送信/受信/診断/試験) remain as brand accents behind the plain

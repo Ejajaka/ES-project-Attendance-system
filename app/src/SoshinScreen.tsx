@@ -295,7 +295,9 @@ export default function SoshinScreen({
                   labelWidth={92}
                 />
                 <Text style={[text.tiny, { color: colors.faint, lineHeight: 14 }]}>
-                  Receivers on the same preset auto-join this SSID. Manual fallback: RECEIVER mode → CONFIG.
+                  Demo fallback only: in the atlas deployment the ESP32 hosts the
+                  open network and receivers join that. To use this hotspot by
+                  hand, set RECEIVER → CONFIG to this SSID/passphrase.
                 </Text>
               </Panel>
             )}

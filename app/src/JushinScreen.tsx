@@ -11,18 +11,19 @@ import {
   type LinkSummary,
 } from "shared";
 import { NativeSensors } from "./lib/nativeSensors";
-import type { Settings } from "./settings";
-import { presetById } from "./lib/presets";
+import { ATLAS_SSID, type Settings } from "./settings";
 import { JushinController, type JushinConfig } from "./lib/modes/jushin";
 import { HttpReporter, type ReportResult } from "./lib/reporter";
-import { ensureSession, fetchHotspot, type ServerPresence } from "./lib/server";
+import { ensureSession, type ServerPresence } from "./lib/server";
 import { useSessionPresence } from "./lib/useSessionPresence";
 import { roleLabel } from "./lib/roles";
-import { formatAge, linkChips, linkGlyph, linkStateLabel, modalityLabel } from "./lib/linkView";
+import { linkChips, linkGlyph, linkStateLabel, modalityLabel } from "./lib/linkView";
+import { appendSample, type SignalSample } from "./lib/signalGraph";
 import { DEVICE_ID } from "./identity";
 import { VERSION } from "./version";
 import { colors, MONO, spacing, text } from "./theme";
 import { DeviceLinkRow } from "./components/DeviceLinkRow";
+import { SignalGraph } from "./components/SignalGraph";
 import {
   AlertOverlay,
   BloomField,
@@ -80,6 +81,7 @@ export default function JushinScreen({
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [alert, setAlert] = useState<ConsoleAlert | null>(null);
   const [joinSource, setJoinSource] = useState<string>("—");
+  const [signal, setSignal] = useState<SignalSample[]>([]);
   const controllerRef = useRef<JushinController | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const busyRef = useRef(false);
@@ -97,18 +99,12 @@ export default function JushinScreen({
       });
       console.log(`[receiver] session ensure: ${ok}`);
 
-      // Auto-join the transmitter's live hotspot: the transmitter announces
-      // the Android-generated SSID/passphrase to the session. Fall back to
-      // manual CONFIG values when the announce is unreachable.
-      const announced = await fetchHotspot(serverUrl, settings.sessionId);
-      const ssid = announced?.ssid ?? settings.soshinSsid;
-      const pass = announced?.passphrase ?? settings.soshinPass ?? undefined;
-      setJoinSource(
-        announced
-          ? `AUTO ${announced.ssid}`
-          : `MANUAL ${settings.soshinSsid}`,
-      );
-      console.log(`[receiver] join target ${ssid} (${announced ? "announced" : "config fallback"})`);
+      // Every device rides the same fixed open `atlas` network (the ESP32
+      // room-node softAP). No passphrase: Android may still show its one-time
+      // per-app approval dialog, but it never asks for a WiFi password.
+      const ssid = settings.soshinSsid || ATLAS_SSID;
+      setJoinSource(`ATLAS · OPEN · ${ssid}`);
+      console.log(`[receiver] join target ${ssid} (open network, no password)`);
 
       const sensors = new NativeSensors();
       const reporter = new HttpReporter(serverUrl);
@@ -117,7 +113,8 @@ export default function JushinScreen({
         roomId: settings.roomId,
         sessionId: settings.sessionId,
         soshinSsid: ssid,
-        soshinPass: pass,
+        // Empty = open network (atlas). CONFIG can still pin a WPA2 fallback.
+        soshinPass: settings.soshinPass || undefined,
       };
       const controller = new JushinController(sensors, config, reporter);
       const b = await controller.startAttendance();
@@ -126,6 +123,7 @@ export default function JushinScreen({
       controllerRef.current = controller;
       setRunning(true);
       setStartedAt(Date.now());
+      setSignal([]);
       prevVerdictRef.current = null;
 
       const loop = async () => {
@@ -137,6 +135,19 @@ export default function JushinScreen({
           setLastResult(controller.lastReportResult);
           setTicks((n) => n + 1);
           setLocal(computeLocal(report));
+
+          // Feed the live trace: strongest BLE beacon + the joined AP's RSSI.
+          const strongestBle = (report.ble?.readings ?? []).reduce<number | null>(
+            (best, r) => (best == null || r.rssi > best ? r.rssi : best),
+            null,
+          );
+          const wifiRssi =
+            report.wifi?.connectedToSoshin && report.wifi.soshinRssi != null
+              ? report.wifi.soshinRssi
+              : null;
+          setSignal((prev) =>
+            appendSample(prev, { t: report.timestamp, ble: strongestBle, wifi: wifiRssi }),
+          );
 
           // Verdict flip → slam the console alert (PATTERN GREEN / TARGET LOST).
           const v = controller.lastReportResult?.presence?.present ?? null;
@@ -412,6 +423,16 @@ export default function JushinScreen({
                   </View>
                 </View>
               )}
+            </Panel>
+
+            {/* 電波 — live WiFi/BLE trace: walk the phone away, watch it fall */}
+            <Panel
+              title="SIGNAL TRACE / 電波"
+              tone={colors.cyan}
+              accentLabel={running ? "LIVE · 5s POLL" : "STANDBY"}
+              grid
+            >
+              <SignalGraph samples={signal} />
             </Panel>
 
             {/* MAGI — the server verdict */}
