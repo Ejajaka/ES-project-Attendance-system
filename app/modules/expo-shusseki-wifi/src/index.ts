@@ -25,8 +25,9 @@ export interface NativePermissionResponse {
 const NativeWifi = requireNativeModule("ShussekiWifi");
 
 /**
- * Jushin: connect to the Soshin hotspot / local network. The passphrase is
- * required for WPA2 local-only hotspots; omit it for open networks.
+ * Jushin: join the room's WiFi. The room rides the fixed open `atlas` network
+ * (ESP32 softAP), so pass no passphrase — the specifier matches the bare SSID.
+ * A passphrase is still accepted for WPA2 fallback networks.
  */
 export async function wifiConnectSoshin(
   ssid: string,
@@ -41,9 +42,10 @@ export async function wifiGetObservation(): Promise<NativeWifiObservation> {
 }
 
 /**
- * Soshin: raise a LocalOnlyHotspot and return its SSID + passphrase.
- * Fails with a native error when another hotspot is active or permissions
- * are missing (location / nearby-devices).
+ * Soshin demo fallback: raise a LocalOnlyHotspot and return its SSID +
+ * passphrase. In the real deployment the ESP32 room node hosts `atlas`
+ * (open); this stays for the two-phone demo, where Android < 16 cannot
+ * create an open fixed-SSID AP.
  */
 export async function wifiStartHotspot(): Promise<NativeHotspotInfo> {
   return NativeWifi.startHotspot();

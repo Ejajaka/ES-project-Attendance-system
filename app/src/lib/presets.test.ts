@@ -6,15 +6,16 @@ import {
   presetById,
   type PresetId,
 } from "./presets";
-import type { Settings } from "../settings";
+import { ATLAS_SSID, type Settings } from "../settings";
 
 /**
- * Preset rooms replace the old manual room/session/SSID typing: the host and
- * every phone pick one of three room presets, which fixes roomId, sessionId,
- * hotspot SSID hint, and rolling-code secret so both sides match instantly.
+ * Preset rooms replace the old manual room/session typing: the host and every
+ * phone pick one of three room presets, which fixes roomId, sessionId, and the
+ * rolling-code secret so both sides match instantly. WiFi is shared — every
+ * room rides the fixed open `atlas` network.
  */
 
-test("there are exactly three preset rooms, each distinct", () => {
+test("three preset rooms share the fixed open atlas network", () => {
   expect(ROOM_PRESETS).toHaveLength(3);
   const ids = new Set(ROOM_PRESETS.map((p) => p.id));
   const rooms = new Set(ROOM_PRESETS.map((p) => p.roomId));
@@ -24,7 +25,8 @@ test("there are exactly three preset rooms, each distinct", () => {
   expect(ids.size).toBe(3);
   expect(rooms.size).toBe(3);
   expect(sessions.size).toBe(3);
-  expect(ssids.size).toBe(3);
+  // One shared open network, not a per-room hotspot.
+  expect(ssids).toEqual(new Set([ATLAS_SSID]));
   expect(secrets.size).toBe(3);
 });
 

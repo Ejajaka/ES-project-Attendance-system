@@ -12,12 +12,18 @@ export interface Settings {
   studentId: string;
   /** Full name of the student (auto-enrolls the attendance roster). */
   studentName: string;
-  /** SSID hint; the live AutoHotspot SSID comes from the server announce. */
+  /** SSID to join; defaults to the fixed open `atlas` network. */
   soshinSsid: string;
-  /** WPA passphrase of the transmitter hotspot (empty = open/discover). */
+  /** WPA passphrase. Empty/absent = open network (no password). */
   soshinPass?: string;
   secret: string; // shared rolling-code secret (transmitter side + server session)
 }
+
+/**
+ * Fixed open WiFi network hosted by the room node (the ESP32 softAP).
+ * No password: phones join it with a WifiNetworkSpecifier on the bare SSID.
+ */
+export const ATLAS_SSID = "atlas";
 
 export const SERVER_URL =
   (process.env.EXPO_PUBLIC_SERVER_URL as string | undefined) ??

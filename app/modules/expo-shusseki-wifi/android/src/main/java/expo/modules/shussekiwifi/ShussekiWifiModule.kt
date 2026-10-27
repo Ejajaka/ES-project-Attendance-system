@@ -18,9 +18,12 @@ import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 
 /**
- * Soshin hosts a LocalOnlyHotspot; Jushin joins it (WifiNetworkSpecifier) and
- * reports WiFi RSSI. getRssi requires ACCESS_FINE_LOCATION + location services
- * enabled; hotspot + join additionally use NEARBY_WIFI_DEVICES (API 33+).
+ * Jushin joins the fixed open `atlas` network (ESP32 room-node softAP) with a
+ * WifiNetworkSpecifier and reports the AP's RSSI. No passphrase: the specifier
+ * is SSID-only, which is how Android targets an open network.
+ *
+ * getRssi requires ACCESS_FINE_LOCATION + location services enabled; hotspot +
+ * join additionally use NEARBY_WIFI_DEVICES (API 33+).
  */
 class ShussekiWifiModule : Module() {
   private val context: Context
@@ -100,6 +103,9 @@ class ShussekiWifiModule : Module() {
     }
     val request = NetworkRequest.Builder()
       .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+      // `atlas` is a local AP without internet; matching must not require the
+      // INTERNET capability or the request never becomes available.
+      .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
       .setNetworkSpecifier(specifierBuilder.build())
       .build()
 

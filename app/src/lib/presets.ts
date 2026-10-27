@@ -1,14 +1,13 @@
-import { SERVER_URL, type Settings } from "../settings";
+import { ATLAS_SSID, SERVER_URL, type Settings } from "../settings";
 
 /**
  * Preset rooms: three fixed room identities. The host (transmitter) and every
- * phone (receiver) pick the same preset, which pins roomId, sessionId, SSID
- * hint, and rolling-code secret — no manual room/session setup.
+ * phone (receiver) pick the same preset, which pins roomId, sessionId, and
+ * rolling-code secret — no manual room/session setup.
  *
- * Note: Android assigns the LocalOnlyHotspot SSID at runtime
- * (`AndroidShare_XXXX`). The transmitter announces the real SSID/passphrase to
- * the server, and receivers auto-join from `GET /api/sessions/:id/hotspot`.
- * The preset SSID is only a human-readable hint / fallback.
+ * WiFi is no longer per-session: every room rides the same fixed open
+ * `atlas` network (the ESP32 room-node softAP, no password). The preset SSID
+ * is kept only so CONFIG shows the right default.
  */
 export type PresetId = "1" | "2" | "3";
 
@@ -30,7 +29,7 @@ export const ROOM_PRESETS: RoomPreset[] = [
     jp: "第一室",
     roomId: "room-1",
     sessionId: "sess-1",
-    ssid: "Shusseki-1",
+    ssid: ATLAS_SSID,
     secret: "shusseki-preset-1-secret",
   },
   {
@@ -39,7 +38,7 @@ export const ROOM_PRESETS: RoomPreset[] = [
     jp: "第二室",
     roomId: "room-2",
     sessionId: "sess-2",
-    ssid: "Shusseki-2",
+    ssid: ATLAS_SSID,
     secret: "shusseki-preset-2-secret",
   },
   {
@@ -48,7 +47,7 @@ export const ROOM_PRESETS: RoomPreset[] = [
     jp: "第三室",
     roomId: "room-3",
     sessionId: "sess-3",
-    ssid: "Shusseki-3",
+    ssid: ATLAS_SSID,
     secret: "shusseki-preset-3-secret",
   },
 ];
