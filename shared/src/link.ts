@@ -94,7 +94,8 @@ function bleLink(report: DeviceReport): ModalityLink | null {
 function wifiLink(report: DeviceReport): ModalityLink | null {
   if (!report.wifi) return null;
   const w = report.wifi;
-  if (!w.connectedToSoshin) {
+  const available = w.connectedToSoshin || w.soshinVisible === true;
+  if (!available) {
     return {
       modality: "wifi",
       state: "lost",
@@ -103,10 +104,10 @@ function wifiLink(report: DeviceReport): ModalityLink | null {
       snr: null,
       received: false,
       missReason: null,
-      detail: "not joined",
+      detail: "not in range",
     };
   }
-  // Joined but RSSI unknown: the link exists, quality is unknowable.
+  // Joined or scanned but RSSI unknown: the link exists, quality is unknowable.
   if (w.soshinRssi == null || Number.isNaN(w.soshinRssi)) {
     return {
       modality: "wifi",
@@ -116,20 +117,20 @@ function wifiLink(report: DeviceReport): ModalityLink | null {
       snr: null,
       received: true,
       missReason: null,
-      detail: "joined · rssi unknown",
+      detail: w.connectedToSoshin ? "joined · rssi unknown" : "in range · rssi unknown",
     };
   }
   return {
     modality: "wifi",
-    // A joined association proves the link exists; very weak RSSI can only
-    // degrade it, never mark it lost.
+    // A visible/joined association proves the link exists; very weak RSSI can
+    // only degrade it, never mark it lost.
     state: w.soshinRssi >= -75 ? "connected" : "degraded",
     quality: rssiQuality(w.soshinRssi),
     rssi: w.soshinRssi,
     snr: null,
     received: true,
     missReason: null,
-    detail: `${w.soshinRssi} dBm`,
+    detail: `${w.soshinRssi} dBm${w.connectedToSoshin ? "" : " · in range"}`,
   };
 }
 

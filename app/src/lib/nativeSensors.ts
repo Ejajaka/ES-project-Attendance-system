@@ -93,6 +93,7 @@ export class NativeSensors implements DeviceSensors {
         return {
           ssid: o.ssid ?? undefined,
           connectedToSoshin: o.connectedToSoshin,
+          soshinVisible: o.soshinVisible,
           soshinRssi: o.soshinRssi,
           bssid: o.bssid ?? undefined,
         };

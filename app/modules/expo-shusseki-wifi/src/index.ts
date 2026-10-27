@@ -2,6 +2,8 @@ import { requireNativeModule } from "expo";
 
 export interface NativeWifiObservation {
   connectedToSoshin: boolean;
+  /** True when the transmitter's AP is visible in a scan (may be unassociated). */
+  soshinVisible?: boolean;
   soshinRssi: number | null;
   ssid: string | null;
   bssid: string | null;

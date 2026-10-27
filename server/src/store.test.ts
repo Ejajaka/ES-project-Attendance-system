@@ -71,3 +71,20 @@ test("roster is stored and retrievable per session", () => {
   expect(s.rosterForSession("s1")).toHaveLength(1);
   expect(s.rosterForSession("other")).toHaveLength(0);
 });
+
+test("ensureStudent refreshes the device binding without duplicating", () => {
+  const s = new MemoryStore();
+  s.ensureStudent("s1", { studentId: "bl.1", name: "Ada", deviceId: "phone-old" });
+  s.ensureStudent("s1", { studentId: "bl.1", name: "Ada", deviceId: "phone-new" });
+  const roster = s.rosterForSession("s1");
+  expect(roster).toHaveLength(1);
+  expect(roster[0]!.deviceId).toBe("phone-new");
+  expect(roster[0]!.studentId).toBe("bl.1");
+});
+
+test("ensureStudent trims the roll and ignores an empty id", () => {
+  const s = new MemoryStore();
+  s.ensureStudent("s1", { studentId: " bl.1 ", name: "Ada" });
+  s.ensureStudent("s1", { studentId: "  ", name: "Ghost" });
+  expect(s.rosterForSession("s1")).toEqual([{ studentId: "bl.1", name: "Ada" }]);
+});

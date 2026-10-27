@@ -127,6 +127,9 @@ class ShussekiUltrasonicModule : Module() {
   // --- matched detection ---------------------------------------------
 
   private val frameMs = 20L
+  /** A sustained tone must cover at least this fraction of the listen window. */
+  private val minOnFraction = 0.20
+  private val minPeakTone = 1e7
 
   private fun detectPresence(timeoutMs: Long): Map<String, Any?> {
     val minBuf = AudioRecord.getMinBufferSize(
@@ -169,30 +172,37 @@ class ShussekiUltrasonicModule : Module() {
       grandTotal += toneMag[f] + refMag[f]
     }
 
-    // Count frames that are clearly "on tone" and the number of on-RUNS (bursts).
+    // Count frames that are clearly "on tone". The transmitter repeats its
+    // stamp and mic AGC makes the on/off runs flicker, so do NOT require an
+    // exact burst/run count (that rejected a clearly-audible link). Presence
+    // is: the tone dominates its neighbour for a meaningful part of the window.
     val burstFrames = (burstMs / frameMs).toInt()
     val onToneRatio = 3.0
     var onFrames = 0
     var runs = 0
     var inRun = false
+    var longestRun = 0
+    var currentRun = 0
     var peakTone = 0.0
     for (f in 0 until frames) {
       val on = refMag[f] > 0 && toneMag[f] > onToneRatio * refMag[f]
       if (on) {
         onFrames++
-        if (!inRun) { runs++; inRun = true }
+        if (!inRun) { runs++; inRun = true; currentRun = 0 }
+        currentRun++
+        if (currentRun > longestRun) longestRun = currentRun
       } else {
         inRun = false
+        currentRun = 0
       }
       if (toneMag[f] > peakTone) peakTone = toneMag[f]
     }
 
-    // Cadence: a stamp is `bursts` on-bursts separated by gaps. Require roughly
-    // that many distinct on-runs and a plausible on-frame total.
-    val runsOk = runs >= bursts - 1 && runs <= bursts + 2
-    val totalOk = onFrames in (bursts * burstFrames - burstFrames)..(bursts * burstFrames + burstFrames)
-    val present = runsOk && totalOk && peakTone > 1e7
-    val score = if (runsOk) onFrames.toDouble() / (bursts * burstFrames) else 0.0
+    // Gain-invariant and tolerant of repeats/flicker: a real stamp holds the
+    // tone for ~40% of a burst cycle, far above ambient noise.
+    val onFraction = if (frames > 0) onFrames.toDouble() / frames else 0.0
+    val present = onFraction >= minOnFraction && peakTone > minPeakTone
+    val score = onFraction
 
     val miss = when {
       present -> "none"
@@ -201,7 +211,7 @@ class ShussekiUltrasonicModule : Module() {
     }
     android.util.Log.i(
       "ShussekiUltrasonic",
-      "TONE onFrames=$onFrames runs=$runs expected=${bursts * burstFrames} peakTone=${String.format("%.0f", peakTone)} present=$present",
+      "TONE onFrames=$onFrames frac=${String.format("%.2f", onFraction)} runs=$runs longest=$longestRun expected=${bursts * burstFrames} peakTone=${String.format("%.0f", peakTone)} present=$present",
     )
     return mapOf(
       "received" to present,

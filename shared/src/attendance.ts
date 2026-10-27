@@ -76,33 +76,52 @@ function coverageOf(t: DeviceTimeline): number {
 
 /**
  * Build the attendance sheet by matching each roster entry to a device timeline.
- * Matching prefers `deviceId` (explicit binding), then the device's reported
- * `studentId`. Timelines that match nobody are returned as `unrostered`.
+ * A timeline matches by its reported `studentId` (trimmed) or the roster's
+ * explicit `deviceId` binding. When a student has several matching timelines
+ * (e.g. a reinstalled/swapped phone), the freshest one supplies the row and
+ * none of them are reported as unrostered. Timelines that match nobody are
+ * returned as `unrostered`.
  */
 export function buildAttendance(input: {
   sessionId: string;
   generatedAt: number;
   students: Student[];
   timelines: DeviceTimeline[];
+  /** When set, a timeline older than this is treated as absent (stale). */
+  ttlMs?: number;
 }): AttendanceSheet {
-  const { sessionId, generatedAt, students, timelines } = input;
+  const { sessionId, generatedAt, students, timelines, ttlMs } = input;
   const used = new Set<string>();
+  const norm = (v?: string) => (v ?? "").trim();
 
   const rows: AttendanceRow[] = students.map((s) => {
-    let t: DeviceTimeline | undefined;
-    if (s.deviceId) {
-      t = timelines.find((x) => x.deviceId === s.deviceId);
-    }
-    if (!t) {
-      t = timelines.find((x) => x.studentId === s.studentId);
-    }
-    if (t) used.add(t.deviceId);
+    const sid = norm(s.studentId);
+    const candidates = timelines.filter(
+      (x) =>
+        (s.deviceId != null && x.deviceId === s.deviceId) ||
+        (sid !== "" && norm(x.studentId) === sid),
+    );
+    const t = candidates.length
+      ? candidates.reduce((best, x) => {
+          if (x.lastSeen > best.lastSeen) return x;
+          // On a tie, an explicit deviceId binding wins.
+          if (x.lastSeen === best.lastSeen && s.deviceId && x.deviceId === s.deviceId) {
+            return x;
+          }
+          return best;
+        })
+      : undefined;
+    // Every timeline for this student is accounted for — a stale device from a
+    // previous install must not show up as an unrostered intruder.
+    for (const c of candidates) used.add(c.deviceId);
 
+    const fresh =
+      t != null && (ttlMs == null || generatedAt - t.lastSeen <= ttlMs);
     return {
       studentId: s.studentId,
       name: s.name,
       deviceId: t?.deviceId ?? s.deviceId ?? null,
-      present: t?.present ?? false,
+      present: (t?.present ?? false) && fresh,
       firstSeen: t?.firstSeen ?? null,
       lastSeen: t?.lastSeen ?? null,
       presentMs: t?.presentMs ?? 0,
@@ -110,7 +129,13 @@ export function buildAttendance(input: {
     };
   });
 
-  const unrostered = timelines.filter((t) => !used.has(t.deviceId));
+  // Only currently-seen strangers: a device that left long ago (or a one-off
+  // probe) shouldn't clutter the live register.
+  const unrostered = timelines.filter(
+    (t) =>
+      !used.has(t.deviceId) &&
+      (ttlMs == null || generatedAt - t.lastSeen <= ttlMs),
+  );
 
   return {
     sessionId,

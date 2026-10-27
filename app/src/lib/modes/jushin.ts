@@ -1,6 +1,7 @@
 import type { DeviceReport, BiometricCheck } from "shared";
 import type { DeviceSensors } from "../sensors";
 import type { Reporter, ReportResult } from "../reporter";
+import { RssiSmoother } from "../rssiSmoother";
 
 /**
  * Jushin (phone-side) controller. Connects to the Soshin WiFi, listens only for
@@ -24,6 +25,9 @@ export class JushinController {
   private startBio: BiometricCheck | null = null;
   private endBio: BiometricCheck | null = null;
   private lastResult: ReportResult | null = null;
+  // RSSI is noisy; report a rolling median so the room boundary doesn't twitch.
+  private bleSmoothers = new Map<string, RssiSmoother>();
+  private wifiSmoother = new RssiSmoother(5);
 
   constructor(
     private sensors: DeviceSensors,
@@ -80,19 +84,37 @@ export class JushinController {
 
   /** One sensing cycle: gather all modalities and report to the server. */
   async tick(now: number): Promise<DeviceReport> {
-    const [ble, wifi, ultrasonic] = await Promise.all([
+    const [bleRaw, wifiRaw, ultrasonic] = await Promise.all([
       this.sensors.ble.observe(),
       this.sensors.wifi.observe(),
       this.sensors.ultrasonic.listen(),
     ]);
 
-    // Code-over-BLE: the rolling code now arrives via the Soshin's BLE
-    // advertisement (reliable channel), not over audio. Surface it in the
-    // ultrasonic field so the server's existing TOTP re-verification applies.
+    // Smooth RSSI with a rolling median (robust to fades/spikes).
+    const ble = {
+      ...bleRaw,
+      readings: bleRaw.readings.map((r) => ({
+        ...r,
+        rssi: this.smoothBle(r.nodeId, r.rssi),
+      })),
+    };
+    const wifi =
+      wifiRaw.soshinRssi == null
+        ? wifiRaw
+        : { ...wifiRaw, soshinRssi: this.wifiSmoother.push(wifiRaw.soshinRssi) };
+
+    // Code-over-BLE: the rolling code arrives via the Soshin's BLE
+    // advertisement (reliable channel). Keep it for anti-spoof verification,
+    // but `received` must be the REAL acoustic detection so a phone that is
+    // out of earshot isn't scored as if it heard the room's tone.
     const bleCode = ble.readings.find((r) => r.code)?.code;
-    const ultrasonicReport = bleCode
-      ? { received: true, valid: true, code: bleCode, snr: ultrasonic.snr }
-      : ultrasonic;
+    const ultrasonicReport = {
+      received: ultrasonic.received,
+      valid: ultrasonic.received && bleCode ? true : null,
+      code: bleCode ?? ultrasonic.code ?? null,
+      snr: ultrasonic.snr,
+      missReason: ultrasonic.missReason,
+    };
 
     const report: DeviceReport = {
       deviceId: this.config.deviceId,
@@ -110,6 +132,15 @@ export class JushinController {
 
     this.lastResult = await this.reporter.send(report);
     return report;
+  }
+
+  private smoothBle(nodeId: string, rssi: number): number {
+    let smoother = this.bleSmoothers.get(nodeId);
+    if (!smoother) {
+      smoother = new RssiSmoother(5);
+      this.bleSmoothers.set(nodeId, smoother);
+    }
+    return smoother.push(rssi);
   }
 
   /** Biometric at end of attendance, then stop sensing. */

@@ -1,5 +1,6 @@
 export * from "./types";
 export * from "./link";
+export * from "./room";
 export * from "./attendance";
 export * from "./base64";
 export * from "./simulator";

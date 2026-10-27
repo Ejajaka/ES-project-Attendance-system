@@ -38,13 +38,15 @@ import SoshinScreen from "./SoshinScreen";
 import JushinScreen from "./JushinScreen";
 import SmokeScreen from "./SmokeScreen";
 import E2eScreen from "./E2eScreen";
+import CalibrateScreen from "./CalibrateScreen";
 
-type Mode = "none" | "soshin" | "jushin" | "smoke" | "e2e";
+type Mode = "none" | "soshin" | "jushin" | "smoke" | "e2e" | "calibrate";
 
 /** Deep-linking target parsed from `shusseki://<path>?<query>`. */
 type Launch =
   | { screen: "smoke"; autoRun?: string }
   | { screen: "e2e"; role: E2eRole }
+  | { screen: "calibrate" }
   | { screen: "jushin"; autoEngage: true; studentId?: string; studentName?: string }
   | { screen: "soshin"; autoEngage: true };
 
@@ -73,6 +75,7 @@ function parseLaunch(url: string | null): Launch | null {
     };
   }
   if (path === "tx") return { screen: "soshin", autoEngage: true };
+  if (path === "calibrate") return { screen: "calibrate" };
   return null;
 }
 
@@ -142,7 +145,9 @@ export default function App() {
           />
         ) : (
           <View style={styles.shell}>
-            {mode !== "smoke" && <SettingsPanel settings={settings} onChange={setSettings} />}
+            {mode !== "smoke" && mode !== "calibrate" && (
+              <SettingsPanel settings={settings} onChange={setSettings} />
+            )}
             {mode === "soshin" && (
               <SoshinScreen
                 settings={settings}
@@ -180,6 +185,9 @@ export default function App() {
                   setLaunch(null);
                 }}
               />
+            )}
+            {mode === "calibrate" && (
+              <CalibrateScreen settings={settings} onExit={() => setMode("none")} />
             )}
           </View>
         )}
@@ -281,6 +289,13 @@ function HomeScreen({
           sub="FULL TRIAL · 総合試験"
           tone={colors.red}
           onPress={() => onPick("e2e", { screen: "e2e", role: "both" })}
+        />
+        <MissionTile
+          jp="校正"
+          en="CALIBRATE"
+          sub="ROOM BOUNDARY · 境界校正"
+          tone={colors.cyan}
+          onPress={() => onPick("calibrate")}
         />
       </View>
 

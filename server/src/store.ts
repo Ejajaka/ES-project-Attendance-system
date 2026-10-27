@@ -1,9 +1,12 @@
 import {
   ATTENDANCE_MAX_GAP_MS,
+  dwellUpdate,
   type DeviceReport,
   type GroundTruth,
   type Student,
   type DeviceTimeline,
+  type DwellState,
+  type DwellOptions,
 } from "shared";
 
 /** One self-reported step from an automated E2E test run. */
@@ -46,6 +49,27 @@ export interface Store {
     present: boolean,
   ): void;
   timelinesForSession(sessionId: string): DeviceTimeline[];
+  /** Fold a raw in-room verdict into the device's dwell state. */
+  updateRoomPresence(
+    sessionId: string,
+    deviceId: string,
+    rawInRoom: boolean,
+    at: number,
+    options?: DwellOptions,
+  ): DwellState;
+  getDwell(sessionId: string, deviceId: string): DwellState | undefined;
+  addCalibration(sample: CalibrationSample): void;
+  calibrationForSession(sessionId: string): CalibrationSample[];
+  clearCalibration(sessionId: string): void;
+  /** Drop this session's reports + attendance timeline (keeps roster/calibration). */
+  clearAttendance(sessionId: string): void;
+  /** Track the strongest room signal each device has produced this session. */
+  updateBaseline(
+    sessionId: string,
+    deviceId: string,
+    sample: { ble: number | null; wifi: number | null },
+  ): SignalBaseline;
+  getBaseline(sessionId: string, deviceId: string): SignalBaseline | undefined;
 }
 
 /** A transmitter announcing its LocalOnlyHotspot to the session. */
@@ -57,6 +81,22 @@ export interface HotspotAnnouncement {
   at: number;
 }
 
+/** One labelled RSSI sample used to calibrate the room boundary. */
+export interface CalibrationSample {
+  sessionId: string;
+  label: "inside" | "outside";
+  deviceId: string;
+  ble: number | null;
+  wifi: number | null;
+  at: number;
+}
+
+/** A device's strongest observed room signal (per channel). */
+export interface SignalBaseline {
+  ble: number | null;
+  wifi: number | null;
+}
+
 /** Whole-store serialization (for the JSON-file persistence in server.ts). */
 export interface StoreSnapshot {
   reports: DeviceReport[];
@@ -65,6 +105,7 @@ export interface StoreSnapshot {
   hotspots: HotspotAnnouncement[];
   rosters: [string, Student[]][];
   timelines: [string, DeviceTimeline[]][];
+  calibrations?: CalibrationSample[];
 }
 
 export class MemoryStore implements Store {
@@ -74,6 +115,9 @@ export class MemoryStore implements Store {
   private hotspots = new Map<string, HotspotAnnouncement>();
   private rosters = new Map<string, Student[]>();
   private timelines = new Map<string, Map<string, DeviceTimeline>>();
+  private dwells = new Map<string, Map<string, DwellState>>();
+  private calibrations: CalibrationSample[] = [];
+  private baselines = new Map<string, Map<string, SignalBaseline>>();
 
   addReport(report: DeviceReport): void {
     this.reports.push(report);
@@ -127,7 +171,14 @@ export class MemoryStore implements Store {
   }
 
   setRoster(sessionId: string, students: Student[]): void {
-    this.rosters.set(sessionId, students);
+    this.rosters.set(
+      sessionId,
+      students.map((s) => ({
+        ...s,
+        studentId: s.studentId.trim(),
+        name: s.name.trim(),
+      })),
+    );
   }
 
   rosterForSession(sessionId: string): Student[] {
@@ -138,18 +189,32 @@ export class MemoryStore implements Store {
     sessionId: string,
     student: { studentId: string; name?: string; deviceId?: string },
   ): void {
+    const studentId = student.studentId.trim();
+    if (!studentId) return;
     const list = this.rosters.get(sessionId) ?? [];
-    const i = list.findIndex((s) => s.studentId === student.studentId);
+    const i = list.findIndex((s) => s.studentId.trim() === studentId);
     if (i < 0) {
       list.push({
-        studentId: student.studentId,
-        name: student.name || student.studentId,
+        studentId,
+        name: student.name?.trim() || studentId,
         deviceId: student.deviceId,
       });
       this.rosters.set(sessionId, list);
-    } else if (student.name && list[i]!.name !== student.name) {
-      // Only overwrite a name when the report supplies one (never the roll fallback).
-      list[i] = { ...list[i]!, name: student.name };
+      return;
+    }
+    const cur = list[i]!;
+    const next = { ...cur };
+    // Only overwrite a name when the report supplies one (never the roll fallback).
+    if (student.name?.trim() && cur.name !== student.name.trim()) {
+      next.name = student.name.trim();
+    }
+    // Reinstalled or swapped phone: keep the roster bound to the current device.
+    if (student.deviceId && cur.deviceId !== student.deviceId) {
+      next.deviceId = student.deviceId;
+    }
+    if (next.name !== cur.name || next.deviceId !== cur.deviceId) {
+      list[i] = next;
+      this.rosters.set(sessionId, list);
     }
   }
 
@@ -197,6 +262,80 @@ export class MemoryStore implements Store {
     return [...(this.timelines.get(sessionId)?.values() ?? [])];
   }
 
+  updateRoomPresence(
+    sessionId: string,
+    deviceId: string,
+    rawInRoom: boolean,
+    at: number,
+    options?: DwellOptions,
+  ): DwellState {
+    let perSession = this.dwells.get(sessionId);
+    if (!perSession) {
+      perSession = new Map();
+      this.dwells.set(sessionId, perSession);
+    }
+    const next = dwellUpdate(perSession.get(deviceId), rawInRoom, at, options);
+    perSession.set(deviceId, next);
+    return next;
+  }
+
+  getDwell(sessionId: string, deviceId: string): DwellState | undefined {
+    return this.dwells.get(sessionId)?.get(deviceId);
+  }
+
+  addCalibration(sample: CalibrationSample): void {
+    this.calibrations.push(sample);
+  }
+
+  calibrationForSession(sessionId: string): CalibrationSample[] {
+    return this.calibrations.filter((c) => c.sessionId === sessionId);
+  }
+
+  clearCalibration(sessionId: string): void {
+    this.calibrations = this.calibrations.filter((c) => c.sessionId !== sessionId);
+  }
+
+  clearAttendance(sessionId: string): void {
+    this.reports = this.reports.filter((r) => r.sessionId !== sessionId);
+    this.timelines.delete(sessionId);
+    this.dwells.delete(sessionId);
+    // A fresh register should learn each phone's baseline again.
+    this.baselines.delete(sessionId);
+  }
+
+  updateBaseline(
+    sessionId: string,
+    deviceId: string,
+    sample: { ble: number | null; wifi: number | null },
+  ): SignalBaseline {
+    let perSession = this.baselines.get(sessionId);
+    if (!perSession) {
+      perSession = new Map();
+      this.baselines.set(sessionId, perSession);
+    }
+    const prev = perSession.get(deviceId) ?? { ble: null, wifi: null };
+    const next: SignalBaseline = {
+      ble:
+        sample.ble == null
+          ? prev.ble
+          : prev.ble == null
+            ? sample.ble
+            : Math.max(prev.ble, sample.ble),
+      wifi:
+        sample.wifi == null
+          ? prev.wifi
+          : prev.wifi == null
+            ? sample.wifi
+            : Math.max(prev.wifi, sample.wifi),
+    };
+    perSession.set(deviceId, next);
+    return next;
+  }
+
+  getBaseline(sessionId: string, deviceId: string): SignalBaseline | undefined {
+    return this.baselines.get(sessionId)?.get(deviceId);
+  }
+
   /** Serialize all state (reports, rosters, timelines, …) for persistence. */
   snapshot(): StoreSnapshot {
     return {
@@ -206,6 +345,7 @@ export class MemoryStore implements Store {
       hotspots: [...this.hotspots.values()],
       rosters: [...this.rosters.entries()],
       timelines: [...this.timelines.entries()].map(([k, m]) => [k, [...m.values()]]),
+      calibrations: this.calibrations,
     };
   }
 
@@ -221,5 +361,6 @@ export class MemoryStore implements Store {
         new Map(arr.map((t) => [t.deviceId, t])),
       ]),
     );
+    this.calibrations = s.calibrations ?? [];
   }
 }

@@ -33,6 +33,7 @@ class ShussekiWifiModule : Module() {
   // getObservation can report an honest connectedToSoshin.
   private var specifierAvailable = false
   private var requestedSsid: String? = null
+  private var scannedBssid: String? = null
   private val connectivity: ConnectivityManager
     get() = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
@@ -118,18 +119,53 @@ class ShussekiWifiModule : Module() {
 
   private fun getObservation(): Map<String, Any?> {
     val wifi = context.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-      ?: return mapOf("connectedToSoshin" to false, "soshinRssi" to null, "ssid" to null, "bssid" to null)
+      ?: return mapOf(
+        "connectedToSoshin" to false,
+        "soshinVisible" to false,
+        "soshinRssi" to null,
+        "ssid" to null,
+        "bssid" to null,
+      )
     val info = wifi.connectionInfo
     val ssid = info?.ssid?.removeSurrounding("\"")
     val connected = specifierAvailable || (requestedSsid != null && ssid == requestedSsid)
+
+    // If we are not associated with the transmitter, still measure its signal
+    // from a WiFi scan. This lets the receiver stay on the internet/PC hotspot
+    // (so reports reach the server) while still proving room proximity.
+    var visible = connected
+    var rssi = if (connected) info?.rssi else null
+    if (!connected && requestedSsid != null) {
+      val scanned = scanForSsid(wifi, requestedSsid!!)
+      visible = scanned.first
+      rssi = scanned.second
+    }
+
     return mapOf(
       "connectedToSoshin" to connected,
-      // Only report RSSI while associated with the transmitter: otherwise the
-      // value belongs to some other network and would corrupt link stats.
-      "soshinRssi" to (if (connected) info?.rssi else null),
+      "soshinVisible" to visible,
+      // Only report RSSI for the transmitter: either associated, or seen in a
+      // scan with the exact requested SSID (never some other network's value).
+      "soshinRssi" to rssi,
       "ssid" to ssid,
-      "bssid" to (if (connected) info?.bssid else null),
+      "bssid" to (if (connected) info?.bssid else scannedBssid),
     )
+  }
+
+  /** Scan and return (visible, strongestRssi) for the requested SSID. */
+  private fun scanForSsid(wifi: WifiManager, ssid: String): Pair<Boolean, Int?> {
+    return try {
+      wifi.startScan()
+      val match = wifi.scanResults
+        ?.filter { it.SSID?.removeSurrounding("\"") == ssid }
+        ?.maxByOrNull { it.level }
+      scannedBssid = match?.BSSID
+      (match != null) to match?.level
+    } catch (e: SecurityException) {
+      (false) to null
+    } catch (e: Exception) {
+      (false) to null
+    }
   }
 
   @Suppress("DEPRECATION")

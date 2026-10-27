@@ -6,12 +6,20 @@ import {
   buildAttendance,
   attendanceToCsv,
   RosterSchema,
+  ROOM_TTL_MS,
+  ROOM_BLE_RSSI_THRESHOLD,
+  ROOM_WIFI_RSSI_THRESHOLD,
+  ROOM_ENTER_MS,
+  ROOM_EXIT_MS,
+  suggestThresholds,
+  adaptiveThreshold,
+  roomPresence,
   type AttendanceSheet,
   type GroundTruth,
   type DeviceReport,
 } from "shared";
-import { computeDevicePresence } from "./presence";
-import { MemoryStore, type Store } from "./store";
+import { computeDevicePresence, type SessionConfig } from "./presence";
+import { MemoryStore, type Store, type SignalBaseline } from "./store";
 import { SessionRegistry, type CreateSessionInput } from "./sessions";
 import type { E2eEvent } from "./store";
 
@@ -32,7 +40,7 @@ function esc(s: string): string {
  * (one `roll,name` per line) and POSTed to `/api/sessions/:id/roster`; the sheet
  * auto-refreshes every 5 s. Open in any browser on the room's network.
  */
-function attendanceHtml(sheet: AttendanceSheet): string {
+function attendanceHtml(sheet: AttendanceSheet, paused = false): string {
   const rows = sheet.rows
     .map((r) => {
       const dur = r.presentMs >= 1000 ? `${Math.round(r.presentMs / 1000)}s` : "—";
@@ -67,6 +75,8 @@ function attendanceHtml(sheet: AttendanceSheet): string {
     "  fetch(ROSTER_URL,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({students:students})})",
     "    .then(function(){ location.reload(); });",
     "  return false; }",
+    `function clearAttendance(e){ e.preventDefault(); if(!confirm('Clear ALL attendance AND the roster for this session?')) return false; fetch('/api/sessions/${sid}/attendance/reset',{method:'POST'}).then(function(r){return r.json();}).then(function(d){ if(d.error){ alert(d.error); } location.reload(); }).catch(function(err){ alert('Failed: '+err); }); return false; }`,
+    `function resume(e){ e.preventDefault(); fetch('/api/sessions/${sid}/resume',{method:'POST'}).then(function(){ location.reload(); }); return false; }`,
   ].join("\n");
 
   return `<!doctype html><html><head><meta charset="utf-8">
@@ -85,13 +95,23 @@ function attendanceHtml(sheet: AttendanceSheet): string {
   tr.a { color:#5f6f66; }
   textarea { width:100%; max-width:780px; height:120px; background:#0f1512; color:#c8f7d4; border:1px solid #24382c; padding:8px; font:inherit; }
   button { background:#19d36b; color:#04120a; border:0; padding:8px 14px; font:inherit; font-weight:700; cursor:pointer; letter-spacing:.08em; }
+  button.danger { background:#ff3b5c; color:#12040a; }
+  .paused { border:1px solid #ffb000; color:#ffb000; padding:10px; margin:12px 0; max-width:780px; }
   a { color:#7fe3a1; }
   ul { color:#8aa196; }
 </style></head><body>
 <h1>出席 · Shusseki attendance</h1>
 <div class="meta">session <b>${esc(sheet.sessionId)}</b> · present <b>${sheet.presentCount}</b> / ${
     sheet.rosterCount
-  } · updated ${new Date(sheet.generatedAt).toLocaleTimeString()} · <a href="/api/sessions/${sid}/attendance?format=csv">download CSV</a></div>
+  } · updated ${new Date(sheet.generatedAt).toLocaleTimeString()} · <a href="/api/sessions/${sid}/attendance?format=csv">download CSV</a> · <a href="/calibrate/${sid}">calibrate</a></div>
+${
+  paused
+    ? `<div class="paused">PAUSED — attendance and roster cleared; new reports are ignored.
+         <form onsubmit="return resume(event)" style="display:inline;margin-left:12px">
+           <button type="submit">RESUME</button>
+         </form></div>`
+    : ""
+}
 <table>
 <thead><tr><th>Roll</th><th>Name</th><th>Status</th><th>Device</th><th>Duration</th><th>Coverage</th></tr></thead>
 <tbody>${rows || '<tr><td colspan="6">No roster yet — add students below.</td></tr>'}</tbody>
@@ -102,6 +122,78 @@ ${unrostered ? `<h3>Unrostered devices seen</h3><ul>${unrostered}</ul>` : ""}
   <textarea id="roster"></textarea>
   <p><button type="submit">SAVE ROSTER</button></p>
 </form>
+<form onsubmit="return clearAttendance(event)" style="margin-top:10px">
+  <button class="danger" type="submit">CLEAR ATTENDANCE</button>
+</form><script>
+${script}
+</script>
+</body></html>`;
+}
+
+/**
+ * Room-boundary calibration page. Walk the phone to each spot and tap
+ * MARK INSIDE / MARK OUTSIDE; the server suggests BLE/WiFi thresholds and can
+ * apply them to the session. No dependency outside the browser.
+ */
+function calibrationHtml(sessionId: string): string {
+  const sid = encodeURIComponent(sessionId);
+  const script = [
+    `var BASE = '/api/sessions/${sid}';`,
+    "function esc(s){ return String(s).replace(/[&<>\\\"]/g, function(c){ return ({'&':'&amp;','<':'&lt;','>':'&gt;','\\\"':'&quot;'})[c]; }); }",
+    "function fmt(v){ return v==null ? '—' : v+' dBm'; }",
+    "function refresh(){",
+    "  fetch(BASE + '/calibrate').then(function(r){return r.json();}).then(function(d){",
+    "    document.getElementById('cur').innerHTML = 'room node: <b>' + esc(d.current.roomNodeId || '(not announced)') + '</b><br>' + 'BLE threshold: <b>' + d.current.bleRssiThreshold + ' dBm</b> · WiFi threshold: <b>' + d.current.wifiRssiThreshold + ' dBm</b>';",
+    "    var l = (d.latest||[]).map(function(x){ return '<li>' + esc(x.deviceId) + ' → BLE ' + fmt(x.ble) + ' · WiFi ' + fmt(x.wifi) + ' · ' + (x.inRoom ? '<b class=\"in\">IN ROOM</b>' : 'outside') + '</li>'; }).join('');",
+    "    document.getElementById('latest').innerHTML = l || '<li>no reports yet — open the receiver app and ENGAGE</li>';",
+    "    var s = d.suggestion;",
+    "    document.getElementById('sugg').innerHTML = 'inside samples: <b>' + s.insideSamples + '</b> · outside: <b>' + s.outsideSamples + '</b><br>' + 'suggested BLE: <b>' + (s.bleRssiThreshold==null?'—':s.bleRssiThreshold) + ' dBm</b>' + (s.bleOverlap ? ' <span class=\"warn\">(overlap)</span>' : '') + '<br>' + 'suggested WiFi: <b>' + (s.wifiRssiThreshold==null?'—':s.wifiRssiThreshold) + ' dBm</b>' + (s.wifiOverlap ? ' <span class=\"warn\">(overlap)</span>' : '');",
+    "    var c = d.samples||[]; var ins=c.filter(function(x){return x.label==='inside';}); var outs=c.filter(function(x){return x.label==='outside';});",
+    "    function row(arr){ if(!arr.length) return '—'; return arr.slice(-8).map(function(x){ return 'B' + (x.ble==null?'—':x.ble) + '/W' + (x.wifi==null?'—':x.wifi); }).join('   '); }",
+    "    document.getElementById('samp').innerHTML = '<div><b>INSIDE</b> &nbsp; ' + row(ins) + '</div><div><b>OUTSIDE</b> &nbsp; ' + row(outs) + '</div>';",
+    "  }).catch(function(){});",
+    "}",
+    "function mark(label){",
+    "  fetch(BASE + '/calibrate', {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({label:label})})",
+    "    .then(function(r){return r.json();}).then(function(d){ if(d.error){ alert(d.error); } refresh(); });",
+    "}",
+    "function apply(){",
+    "  fetch(BASE + '/calibrate/apply', {method:'POST', headers:{'content-type':'application/json'}, body:'{}'})",
+    "    .then(function(r){return r.json();}).then(function(d){ if(d.error){ alert(d.error); } else { alert('Applied BLE ' + (d.applied.bleRssiThreshold==null?'—':d.applied.bleRssiThreshold) + ' dBm / WiFi ' + (d.applied.wifiRssiThreshold==null?'—':d.applied.wifiRssiThreshold) + ' dBm'); } refresh(); });",
+    "}",
+    "refresh(); setInterval(refresh, 3000);",
+  ].join("\n");
+
+  return `<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shusseki calibration · ${esc(sessionId)}</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font: 14px/1.5 ui-monospace, Menlo, Consolas, monospace; background:#0b0e0c; color:#c8f7d4; margin:0; padding:24px; }
+  h1 { font-size:18px; letter-spacing:.14em; text-transform:uppercase; }
+  .box { border:1px solid #1d2a22; padding:12px; margin:12px 0; max-width:820px; }
+  .meta { color:#6b8f78; }
+  ul { margin:6px 0; padding-left:18px; color:#9fb8a8; }
+  .in { color:#6dff9e; }
+  .warn { color:#ffcf5c; }
+  button { background:#19d36b; color:#04120a; border:0; padding:10px 16px; font:inherit; font-weight:700; cursor:pointer; letter-spacing:.06em; margin-right:8px; }
+  button.alt { background:#ffcf5c; }
+  a { color:#7fe3a1; }
+</style></head><body>
+<h1>出席 · Calibrate room boundary</h1>
+<div class="meta">session <b>${esc(sessionId)}</b> · <a href="/attendance/${sid}">back to register</a></div>
+
+<div class="box"><div id="cur">loading…</div></div>
+<div class="box"><b>LATEST READING</b><ul id="latest"></ul></div>
+<div class="box"><b>SUGGESTED THRESHOLDS</b><div id="sugg"></div></div>
+<div class="box"><b>SAMPLES</b><div id="samp"></div></div>
+<div class="box">
+  <p>Put the phone <b>inside the room</b> and tap MARK INSIDE (2–3 times, move around).<br>
+  Then step into the <b>corridor</b> and tap MARK OUTSIDE.</p>
+  <button onclick="mark('inside')">MARK INSIDE</button>
+  <button class="alt" onclick="mark('outside')">MARK OUTSIDE</button>
+  <button onclick="apply()">APPLY SUGGESTED</button>
+</div>
 <script>
 ${script}
 </script>
@@ -110,6 +202,22 @@ ${script}
 
 export function createApp(store: Store, sessions: SessionRegistry): Hono {
   const app = new Hono();
+
+  /**
+   * Adaptive per-device thresholds: anchor each phone to its own strongest
+   * in-room signal so a weak antenna doesn't read "absent" right next to the
+   * node, while a phone that never got close still uses the calibrated value.
+   */
+  const effectiveOptions = (config: SessionConfig, baseline?: SignalBaseline) => ({
+    bleRssiThreshold: adaptiveThreshold(
+      config.bleRssiThreshold ?? ROOM_BLE_RSSI_THRESHOLD,
+      baseline?.ble ?? null,
+    ),
+    wifiRssiThreshold: adaptiveThreshold(
+      config.wifiRssiThreshold ?? ROOM_WIFI_RSSI_THRESHOLD,
+      baseline?.wifi ?? null,
+    ),
+  });
 
   app.get("/", (c) =>
     c.json({
@@ -167,24 +275,46 @@ export function createApp(store: Store, sessions: SessionRegistry): Hono {
     const config = sessions.get(report.sessionId);
     if (!config) return c.json({ error: "unknown session" }, 404);
 
-    const presence = computeDevicePresence(report, config);
+    // Clearing attendance pauses the session: ignore new reports until resumed,
+    // except the calibration probe (it must still be able to measure).
+    if (config.paused && !report.deviceId.startsWith("calibrate-")) {
+      return c.json({ paused: true, presence: null });
+    }
+
+    // Measure the raw room signal first, then learn this phone's baseline.
+    const raw = roomPresence(report, { roomNodeId: config.roomNodeId });
+    const baseline = store.updateBaseline(report.sessionId, report.deviceId, {
+      ble: raw.ble.rssi,
+      wifi: raw.wifi.rssi,
+    });
+
+    const presence = computeDevicePresence(report, config, effectiveOptions(config, baseline));
+    // Fold the raw in-room verdict into the device's dwell state.
+    const dwell = store.updateRoomPresence(
+      report.sessionId,
+      report.deviceId,
+      presence.inRoom,
+      report.timestamp,
+      { enterMs: config.enterMs, exitMs: config.exitMs },
+    );
     store.addReport(report);
     // A phone identifying itself auto-enrolls into the roster (name + roll).
     if (report.studentId) {
       store.ensureStudent(report.sessionId, {
         studentId: report.studentId,
         name: report.studentName?.trim() || undefined,
+        deviceId: report.deviceId,
       });
     }
-    // Fold this sample into the device's attendance timeline.
+    // Fold this sample into the device's attendance timeline (dwelled verdict).
     store.recordSample(
       report.sessionId,
       report.deviceId,
       report.studentId,
       report.timestamp,
-      presence.present,
+      dwell.inRoom,
     );
-    return c.json({ presence });
+    return c.json({ presence: { ...presence, present: dwell.inRoom, dwell } });
   });
 
   app.get("/api/sessions/:id/presence", (c) => {
@@ -192,9 +322,20 @@ export function createApp(store: Store, sessions: SessionRegistry): Hono {
     const config = sessions.get(id);
     if (!config) return c.json({ error: "unknown session" }, 404);
     const latest = store.latestPerDevice(id);
-    const devices = [...latest.values()].map((r) =>
-      computeDevicePresence(r, config),
-    );
+    const now = Date.now();
+    const ttl = config.ttlMs ?? ROOM_TTL_MS;
+    const devices = [...latest.values()].map((r) => {
+      const p = computeDevicePresence(
+        r,
+        config,
+        effectiveOptions(config, store.getBaseline(id, r.deviceId)),
+      );
+      const dwell = store.getDwell(id, r.deviceId);
+      const ageMs = now - r.timestamp;
+      const fresh = ageMs <= ttl;
+      const inRoom = fresh ? (dwell?.inRoom ?? p.inRoom) : false;
+      return { ...p, present: inRoom, inRoom, ageMs, dwell: dwell ?? null };
+    });
     return c.json({ sessionId: id, devices });
   });
 
@@ -219,6 +360,8 @@ export function createApp(store: Store, sessions: SessionRegistry): Hono {
       passphrase: body.passphrase ?? null,
       at: Date.now(),
     });
+    // The announcing transmitter owns this room's BLE node id.
+    sessions.setRoomNode(id, body.deviceId);
     return c.json({ ok: true }, 201);
   });
 
@@ -256,12 +399,17 @@ export function createApp(store: Store, sessions: SessionRegistry): Hono {
       sessionId: id,
       generatedAt: Date.now(),
       students: store.rosterForSession(id),
-      timelines: store.timelinesForSession(id),
+      // Calibration probes are not students — keep them out of the register.
+      timelines: store
+        .timelinesForSession(id)
+        .filter((t) => !t.deviceId.startsWith("calibrate-")),
+      ttlMs: sessions.get(id)?.ttlMs ?? ROOM_TTL_MS,
     });
 
   app.get("/api/sessions/:id/attendance", (c) => {
     const id = c.req.param("id");
-    if (!sessions.get(id)) return c.json({ error: "unknown session" }, 404);
+    const config = sessions.get(id);
+    if (!config) return c.json({ error: "unknown session" }, 404);
     const sheet = attendanceSheet(id);
     const format = c.req.query("format");
     if (format === "csv") {
@@ -270,15 +418,174 @@ export function createApp(store: Store, sessions: SessionRegistry): Hono {
         "content-disposition": `attachment; filename="attendance-${id}.csv"`,
       });
     }
-    if (format === "html") return c.html(attendanceHtml(sheet));
+    if (format === "html") {
+      c.header("cache-control", "no-store");
+      return c.html(attendanceHtml(sheet, config.paused === true));
+    }
     return c.json(sheet);
   });
 
   // Human-friendly live register: open in a browser on any device.
   app.get("/attendance/:id", (c) => {
     const id = c.req.param("id");
+    const config = sessions.get(id);
+    if (!config) return c.json({ error: "unknown session" }, 404);
+    c.header("cache-control", "no-store");
+    return c.html(attendanceHtml(attendanceSheet(id), config.paused === true));
+  });
+
+  // --- Room-boundary calibration -------------------------------------------
+
+  const calibrationPayload = (id: string) => {
+    const config = sessions.get(id)!;
+    const samples = store.calibrationForSession(id);
+    const suggestion = suggestThresholds(
+      samples.map((s) => ({ label: s.label, ble: s.ble, wifi: s.wifi })),
+    );
+    const latest = [...store.latestPerDevice(id).values()].map((r) => {
+      const baseline = store.getBaseline(id, r.deviceId);
+      const eff = effectiveOptions(config, baseline);
+      const p = computeDevicePresence(r, config, eff);
+      const dwell = store.getDwell(id, r.deviceId);
+      const fresh = Date.now() - r.timestamp <= (config.ttlMs ?? ROOM_TTL_MS);
+      return {
+        deviceId: r.deviceId,
+        at: r.timestamp,
+        ble: p.room.ble.rssi,
+        wifi: p.room.wifi.rssi,
+        // Report the debounced verdict so a single missed scan doesn't flap.
+        inRoom: fresh ? (dwell?.inRoom ?? p.room.inRoom) : false,
+        baseline: baseline ?? null,
+        effective: eff,
+      };
+    });
+    return {
+      sessionId: id,
+      current: {
+        roomNodeId: config.roomNodeId ?? null,
+        bleRssiThreshold: config.bleRssiThreshold ?? ROOM_BLE_RSSI_THRESHOLD,
+        wifiRssiThreshold: config.wifiRssiThreshold ?? ROOM_WIFI_RSSI_THRESHOLD,
+        ttlMs: config.ttlMs ?? ROOM_TTL_MS,
+        enterMs: config.enterMs ?? ROOM_ENTER_MS,
+        exitMs: config.exitMs ?? ROOM_EXIT_MS,
+      },
+      suggestion,
+      samples,
+      latest,
+    };
+  };
+
+  // Record the current RSSI of the reporting phone(s) under a label.
+  app.post("/api/sessions/:id/calibrate", async (c) => {
+    const id = c.req.param("id");
+    const config = sessions.get(id);
+    if (!config) return c.json({ error: "unknown session" }, 404);
+    let body: { label?: "inside" | "outside"; deviceId?: string };
+    try {
+      body = (await c.req.json()) as typeof body;
+    } catch {
+      return c.json({ error: "invalid JSON" }, 400);
+    }
+    if (body?.label !== "inside" && body?.label !== "outside") {
+      return c.json({ error: "label must be 'inside' or 'outside'" }, 400);
+    }
+    const latest = store.latestPerDevice(id);
+    const targets = body.deviceId
+      ? [latest.get(body.deviceId)].filter((r): r is NonNullable<typeof r> => r != null)
+      : [...latest.values()];
+    if (targets.length === 0) {
+      return c.json({ error: "no recent report from a device" }, 409);
+    }
+    let added = 0;
+    for (const r of targets) {
+      const p = computeDevicePresence(r, config);
+      const ble = p.room.ble.rssi;
+      const wifi = p.room.wifi.rssi;
+      // Skip ticks where the phone saw nothing — a missed BLE scan must not
+      // become a bogus "weak signal" calibration sample.
+      if (ble == null && wifi == null) continue;
+      store.addCalibration({
+        sessionId: id,
+        label: body.label,
+        deviceId: r.deviceId,
+        ble,
+        wifi,
+        at: Date.now(),
+      });
+      added++;
+    }
+    if (added === 0) {
+      return c.json(
+        { error: "no signal in the last report — wait a couple of seconds and tap again" },
+        409,
+      );
+    }
+    return c.json({ ok: true, added }, 201);
+  });
+
+  app.get("/api/sessions/:id/calibrate", (c) => {
+    const id = c.req.param("id");
     if (!sessions.get(id)) return c.json({ error: "unknown session" }, 404);
-    return c.html(attendanceHtml(attendanceSheet(id)));
+    return c.json(calibrationPayload(id));
+  });
+
+  // Start a clean calibration (drop this session's samples).
+  app.post("/api/sessions/:id/calibrate/reset", (c) => {
+    const id = c.req.param("id");
+    if (!sessions.get(id)) return c.json({ error: "unknown session" }, 404);
+    store.clearCalibration(id);
+    return c.json({ ok: true });
+  });
+
+  // Clear the attendance register AND the roster (drops reports, timelines,
+  // roster). The session is PAUSED so still-running phones cannot re-fill it;
+  // RESUME lets phones auto-enroll again.
+  app.post("/api/sessions/:id/attendance/reset", (c) => {
+    const id = c.req.param("id");
+    if (!sessions.get(id)) return c.json({ error: "unknown session" }, 404);
+    store.clearAttendance(id);
+    store.setRoster(id, []);
+    sessions.setPaused(id, true);
+    return c.json({ ok: true, paused: true });
+  });
+
+  // Resume ingestion after a clear.
+  app.post("/api/sessions/:id/resume", (c) => {
+    const id = c.req.param("id");
+    if (!sessions.get(id)) return c.json({ error: "unknown session" }, 404);
+    sessions.setPaused(id, false);
+    return c.json({ ok: true, paused: false });
+  });
+
+  // Apply the suggested (or explicitly supplied) thresholds to the session.
+  app.post("/api/sessions/:id/calibrate/apply", async (c) => {
+    const id = c.req.param("id");
+    const config = sessions.get(id);
+    if (!config) return c.json({ error: "unknown session" }, 404);
+    let body: { bleRssiThreshold?: number; wifiRssiThreshold?: number } = {};
+    try {
+      body = (await c.req.json()) as typeof body;
+    } catch {
+      // empty body is fine — use the suggestion
+    }
+    const suggestion = calibrationPayload(id).suggestion;
+    const ble = body.bleRssiThreshold ?? suggestion.bleRssiThreshold;
+    const wifi = body.wifiRssiThreshold ?? suggestion.wifiRssiThreshold;
+    if (ble == null && wifi == null) {
+      return c.json({ error: "no calibration samples to derive thresholds" }, 409);
+    }
+    sessions.setThresholds(id, {
+      bleRssiThreshold: ble ?? undefined,
+      wifiRssiThreshold: wifi ?? undefined,
+    });
+    return c.json({ ok: true, applied: { bleRssiThreshold: ble, wifiRssiThreshold: wifi } });
+  });
+
+  app.get("/calibrate/:id", (c) => {
+    const id = c.req.param("id");
+    if (!sessions.get(id)) return c.json({ error: "unknown session" }, 404);
+    c.header("cache-control", "no-store");
+    return c.html(calibrationHtml(id));
   });
 
   app.post("/api/sessions/:id/ground-truth", async (c) => {
@@ -301,7 +608,11 @@ export function createApp(store: Store, sessions: SessionRegistry): Hono {
 
     const latest = store.latestPerDevice(id);
     const devices = [...latest.values()].map((r) =>
-      computeDevicePresence(r, config),
+      computeDevicePresence(
+        r,
+        config,
+        effectiveOptions(config, store.getBaseline(id, r.deviceId)),
+      ),
     );
     const predictedPresent = devices.filter((d) => d.present).length;
 
@@ -335,4 +646,5 @@ export function createApp(store: Store, sessions: SessionRegistry): Hono {
 }
 
 export const store = new MemoryStore();
-export const app = createApp(store, new SessionRegistry());
+export const sessions = new SessionRegistry();
+export const app = createApp(store, sessions);

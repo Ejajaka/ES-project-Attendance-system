@@ -41,6 +41,8 @@ export type BleObservation = z.infer<typeof BleObservationSchema>;
 export const WifiObservationSchema = z.object({
   ssid: z.string().optional(),
   connectedToSoshin: z.boolean(),
+  /** True when the transmitter's AP is visible in a scan (may be unassociated). */
+  soshinVisible: z.boolean().optional(),
   soshinRssi: z.number().nullable(), // dBm, or null if AP not in range
   bssid: z.string().optional(),
 });

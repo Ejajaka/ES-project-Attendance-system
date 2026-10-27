@@ -39,7 +39,7 @@ describe("buildAttendance", () => {
     expect(bob.deviceId).toBeNull();
   });
 
-  test("prefers an explicit deviceId binding over studentId", () => {
+  test("on a tie, an explicit deviceId binding wins", () => {
     const sheet = buildAttendance({
       sessionId: "s",
       generatedAt: 1,
@@ -51,7 +51,39 @@ describe("buildAttendance", () => {
     });
     expect(sheet.rows[0]!.present).toBe(true);
     expect(sheet.rows[0]!.deviceId).toBe("phone-x");
-    expect(sheet.unrostered.map((u) => u.deviceId)).toEqual(["phone-other"]);
+    // Both timelines belong to Ada, so neither is a stranger.
+    expect(sheet.unrostered).toHaveLength(0);
+  });
+
+  test("a swapped phone (new deviceId, same studentId) follows the student", () => {
+    const sheet = buildAttendance({
+      sessionId: "s",
+      generatedAt: 1,
+      students: [{ studentId: "bl.1", name: "Ada", deviceId: "phone-old" }],
+      timelines: [
+        timeline({ deviceId: "phone-old", lastSeen: 1_000, present: false }),
+        timeline({
+          deviceId: "phone-new",
+          studentId: "bl.1",
+          lastSeen: 9_000,
+          present: true,
+        }),
+      ],
+    });
+    expect(sheet.rows[0]!.present).toBe(true);
+    expect(sheet.rows[0]!.deviceId).toBe("phone-new");
+    expect(sheet.unrostered).toHaveLength(0);
+  });
+
+  test("trims studentIds when matching", () => {
+    const sheet = buildAttendance({
+      sessionId: "s",
+      generatedAt: 1,
+      students: [{ studentId: "bl.1 ", name: "Ada" }],
+      timelines: [timeline({ deviceId: "p", studentId: "bl.1" })],
+    });
+    expect(sheet.rows[0]!.present).toBe(true);
+    expect(sheet.unrostered).toHaveLength(0);
   });
 
   test("coverage is the present fraction of the observed span", () => {
@@ -93,6 +125,20 @@ describe("buildAttendance", () => {
     });
     expect(sheet.presentCount).toBe(0);
     expect(sheet.unrostered).toHaveLength(1);
+  });
+
+  test("hides unrostered devices that are no longer being seen", () => {
+    const sheet = buildAttendance({
+      sessionId: "s",
+      generatedAt: 100_000,
+      ttlMs: 30_000,
+      students: [],
+      timelines: [
+        timeline({ deviceId: "recent", lastSeen: 90_000 }),
+        timeline({ deviceId: "gone", lastSeen: 10_000 }),
+      ],
+    });
+    expect(sheet.unrostered.map((u) => u.deviceId)).toEqual(["recent"]);
   });
 });
 

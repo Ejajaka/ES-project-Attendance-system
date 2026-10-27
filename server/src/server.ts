@@ -1,6 +1,8 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { serve } from "@hono/node-server";
-import { app, store } from "./index";
+import { app, sessions, store } from "./index";
+import type { SerializedSession } from "./sessions";
+import type { StoreSnapshot } from "./store";
 
 app.use(async (c, next) => {
   console.log("REQ", c.req.method, c.req.url);
@@ -13,10 +15,24 @@ const port = Number(process.env.PORT ?? 8787);
 // restarts (the in-memory store otherwise resets on every boot). Cloudflare
 // Workers deploys `app` without this file-backed bootstrap.
 const dataPath = process.env.SHUSSEKI_DATA;
+
+interface SavedData {
+  store?: Partial<StoreSnapshot>;
+  sessions?: SerializedSession[];
+}
+
 if (dataPath) {
   if (existsSync(dataPath)) {
     try {
-      store.restore(JSON.parse(readFileSync(dataPath, "utf8")));
+      const parsed = JSON.parse(readFileSync(dataPath, "utf8")) as SavedData | Partial<StoreSnapshot>;
+      if (parsed && typeof parsed === "object" && "store" in parsed) {
+        const saved = parsed as SavedData;
+        store.restore(saved.store ?? {});
+        sessions.restore(saved.sessions ?? []);
+      } else {
+        // Backward compat: the old file was the store snapshot only.
+        store.restore(parsed as Partial<StoreSnapshot>);
+      }
       console.log(`Loaded saved state from ${dataPath}`);
     } catch (e) {
       console.warn(`Could not load ${dataPath}:`, e);
@@ -24,7 +40,12 @@ if (dataPath) {
   }
   const persist = () => {
     try {
-      writeFileSync(dataPath, JSON.stringify(store.snapshot()));
+      // Persist the store AND the calibrated session configs (thresholds,
+      // room node, paused) so a restart doesn't force a re-calibration.
+      writeFileSync(
+        dataPath,
+        JSON.stringify({ store: store.snapshot(), sessions: sessions.snapshot() }),
+      );
     } catch (e) {
       console.warn("persist failed:", e);
     }
