@@ -74,8 +74,8 @@ static esp_netif_t *s_ap_netif = NULL;
  * WPA2-Personal hotspot: set SSID + password.
  * WPA2-Enterprise (802.1X): set STA_ENTERPRISE 1 + STA_USERNAME.
  */
-#define STA_SSID "Shusseki-Room"
-#define STA_PASSWORD "shusseki123"
+#define STA_SSID ""
+#define STA_PASSWORD ""
 #define STA_USERNAME ""
 #define STA_ENTERPRISE 0
 
@@ -581,6 +581,11 @@ static void transmitter_task(void *arg)
     /* Deterministic sanity vector: counter 0 is verifiable against shared/Node. */
     totp_code_for(PRESET_SECRET, 0, code);
     ESP_LOGI(TAG, "[totp] sanity counter=0 code=%s", code);
+
+    /* Start the BLE beacon before any blocking HTTP: a room with no server
+       must still be discoverable by receivers. */
+    totp_code_for(PRESET_SECRET, (uint64_t)time(NULL) / TOTP_STEP_S, code);
+    ble_advertise_code(code);
 
     announce_session();
 
