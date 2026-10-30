@@ -277,6 +277,16 @@ export default function JushinScreen({
               plate={verdict == null ? false : true}
             />
 
+            {/* 電波 — live WiFi/BLE trace: walk the phone away, watch it fall */}
+            <Panel
+              title="SIGNAL TRACE / 電波"
+              tone={colors.cyan}
+              accentLabel={running ? "LIVE · 5s POLL" : "STANDBY"}
+              grid
+            >
+              <SignalGraph samples={signal} />
+            </Panel>
+
             {/* AT-FIELD — device-side fused confidence */}
             <Panel title="AT-FIELD / 絶対領域" tone={colors.purple} accentLabel="DEVICE FUSION" grid>
               {local ? (
@@ -438,16 +448,6 @@ export default function JushinScreen({
                   </View>
                 </View>
               )}
-            </Panel>
-
-            {/* 電波 — live WiFi/BLE trace: walk the phone away, watch it fall */}
-            <Panel
-              title="SIGNAL TRACE / 電波"
-              tone={colors.cyan}
-              accentLabel={running ? "LIVE · 5s POLL" : "STANDBY"}
-              grid
-            >
-              <SignalGraph samples={signal} />
             </Panel>
 
             {/* MAGI — the server verdict */}
