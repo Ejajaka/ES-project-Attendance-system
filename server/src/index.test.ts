@@ -501,3 +501,44 @@ test("GET /api/sessions/:id/evaluate reports room-level count error", async () =
   expect(ev.headcount).toBe(3);
   expect(ev.countError).toBe(2);
 });
+
+test("live series + dashboard expose BLE/WiFi/SNR", async () => {
+  const app = makeApp();
+  await app.request("/api/sessions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      sessionId: "s1",
+      roomId: "r1",
+      secret: SECRET_B64,
+      step: 30,
+      digits: 6,
+      window: 1,
+      threshold: 0.5,
+    }),
+  });
+  const code = generateTOTP(SECRET, ALIGNED, { step: 30 });
+  await app.request("/api/reports", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(reportPayload(code)),
+  });
+
+  const series = await app.request("/api/sessions/s1/series");
+  expect(series.status).toBe(200);
+  const body = (await series.json()) as {
+    devices: { deviceId: string; points: { ble: number | null; wifi: number | null; snr: number | null }[] }[];
+  };
+  expect(body.devices).toHaveLength(1);
+  const point = body.devices[0]!.points.at(-1)!;
+  expect(point.ble).toBe(-55);
+  expect(point.wifi).toBe(-50);
+  expect(point.snr).toBeNull();
+
+  const page = await app.request("/dashboard/s1");
+  expect(page.status).toBe(200);
+  expect(page.headers.get("content-type")).toContain("text/html");
+
+  const unknown = await app.request("/api/sessions/nope/series");
+  expect(unknown.status).toBe(404);
+});

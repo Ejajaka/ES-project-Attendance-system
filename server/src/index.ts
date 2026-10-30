@@ -21,6 +21,8 @@ import {
 import { computeDevicePresence, type SessionConfig } from "./presence";
 import { MemoryStore, type Store, type SignalBaseline } from "./store";
 import { SessionRegistry, type CreateSessionInput } from "./sessions";
+import { buildSeries } from "./series";
+import { dashboardHtml } from "./dashboard";
 import type { E2eEvent } from "./store";
 
 /**
@@ -103,7 +105,7 @@ function attendanceHtml(sheet: AttendanceSheet, paused = false): string {
 <h1>出席 · Shusseki attendance</h1>
 <div class="meta">session <b>${esc(sheet.sessionId)}</b> · present <b>${sheet.presentCount}</b> / ${
     sheet.rosterCount
-  } · updated ${new Date(sheet.generatedAt).toLocaleTimeString()} · <a href="/api/sessions/${sid}/attendance?format=csv">download CSV</a> · <a href="/calibrate/${sid}">calibrate</a></div>
+  } · updated ${new Date(sheet.generatedAt).toLocaleTimeString()} · <a href="/api/sessions/${sid}/attendance?format=csv">download CSV</a> · <a href="/calibrate/${sid}">calibrate</a> · <a href="/dashboard/${sid}">dashboard</a></div>
 ${
   paused
     ? `<div class="paused">PAUSED — attendance and roster cleared; new reports are ignored.
@@ -339,6 +341,14 @@ export function createApp(store: Store, sessions: SessionRegistry): Hono {
     return c.json({ sessionId: id, devices });
   });
 
+  // Live series for the dashboard: BLE/WiFi RSSI + ultrasonic SNR per device.
+  app.get("/api/sessions/:id/series", (c) => {
+    const id = c.req.param("id");
+    if (!sessions.get(id)) return c.json({ error: "unknown session" }, 404);
+    c.header("cache-control", "no-store");
+    return c.json(buildSeries(id, store.reportsForSession(id)));
+  });
+
   // A transmitter announces its (system-assigned) hotspot SSID/passphrase so
   // receivers that picked the same preset room can auto-join it.
   app.post("/api/sessions/:id/hotspot", async (c) => {
@@ -432,6 +442,14 @@ export function createApp(store: Store, sessions: SessionRegistry): Hono {
     if (!config) return c.json({ error: "unknown session" }, 404);
     c.header("cache-control", "no-store");
     return c.html(attendanceHtml(attendanceSheet(id), config.paused === true));
+  });
+
+  // Live browser dashboard: BLE/WiFi RSSI + ultrasonic SNR charts.
+  app.get("/dashboard/:id", (c) => {
+    const id = c.req.param("id");
+    if (!sessions.get(id)) return c.json({ error: "unknown session" }, 404);
+    c.header("cache-control", "no-store");
+    return c.html(dashboardHtml(id));
   });
 
   // --- Room-boundary calibration -------------------------------------------
