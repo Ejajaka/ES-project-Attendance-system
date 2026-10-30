@@ -134,7 +134,7 @@ function refresh() {
     .catch(function () {});
 }
 refresh();
-setInterval(refresh, 2000);
+setInterval(refresh, 500);
 `;
 
   return `<!doctype html><html><head><meta charset="utf-8">

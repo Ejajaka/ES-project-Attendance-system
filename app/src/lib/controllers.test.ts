@@ -105,6 +105,21 @@ test("Jushin tick gathers all modalities and reports to the server", async () =>
   expect(reporter.sent[0]).toBe(report);
 });
 
+test("duplicate BLE advertisements collapse to one reading per node", async () => {
+  const sensors = new MockSensors();
+  sensors.bleReadings = [
+    { nodeId: "esp32-tx1", rssi: -72 },
+    { nodeId: "esp32-tx1", rssi: -50 },
+    { nodeId: "other", rssi: -80 },
+  ];
+  const reporter = new MockReporter();
+  const jushin = new JushinController(sensors, jushinConfig, reporter);
+  const report = await jushin.tick(ALIGNED);
+  expect(report.ble?.readings).toHaveLength(2);
+  const node = report.ble?.readings.find((r) => r.nodeId === "esp32-tx1");
+  expect(node?.rssi).toBe(-50); // kept the stronger advertisement
+});
+
 test("Jushin endAttendance performs a biometric and stops sensing", async () => {
   const sensors = new MockSensors();
   const reporter = new MockReporter();

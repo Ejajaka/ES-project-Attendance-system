@@ -119,3 +119,22 @@ export async function ensureSession(
     return false;
   }
 }
+/**
+ * Best-effort 0.5 s graph sample (BLE/WiFi only). The presence report loop is
+ * unaffected if this fails; the dashboard simply shows a gap.
+ */
+export async function postTelemetry(
+  serverUrl: string,
+  sessionId: string,
+  point: { deviceId: string; t: number; ble: number | null; wifi: number | null },
+): Promise<void> {
+  try {
+    await fetch(`${serverUrl}/api/sessions/${encodeURIComponent(sessionId)}/telemetry`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(point),
+    });
+  } catch {
+    /* graph telemetry is best-effort */
+  }
+}

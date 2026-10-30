@@ -14,7 +14,7 @@ import { NativeSensors } from "./lib/nativeSensors";
 import { ATLAS_SSID, type Settings } from "./settings";
 import { JushinController, type JushinConfig } from "./lib/modes/jushin";
 import { HttpReporter, type ReportResult } from "./lib/reporter";
-import { ensureSession, type ServerPresence } from "./lib/server";
+import { ensureSession, postTelemetry, type ServerPresence } from "./lib/server";
 import { useSessionPresence } from "./lib/useSessionPresence";
 import { roleLabel } from "./lib/roles";
 import { linkChips, linkGlyph, linkStateLabel, modalityLabel } from "./lib/linkView";
@@ -83,9 +83,11 @@ export default function JushinScreen({
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [alert, setAlert] = useState<ConsoleAlert | null>(null);
   const [joinSource, setJoinSource] = useState<string>("—");
-  const [signal, setSignal] = useState<SignalSample[]>([]);
+  const [traceReset, setTraceReset] = useState(0);
   const controllerRef = useRef<JushinController | null>(null);
+  const sensorsRef = useRef<NativeSensors | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastBleRef = useRef<number | null>(null);
   const busyRef = useRef(false);
   const prevVerdictRef = useRef<boolean | null>(null);
 
@@ -127,7 +129,9 @@ export default function JushinScreen({
       controllerRef.current = controller;
       setRunning(true);
       setStartedAt(Date.now());
-      setSignal([]);
+      sensorsRef.current = sensors;
+      setTraceReset((n) => n + 1);
+      lastBleRef.current = null;
       prevVerdictRef.current = null;
 
       const loop = async () => {
@@ -145,13 +149,7 @@ export default function JushinScreen({
             (best, r) => (best == null || r.rssi > best ? r.rssi : best),
             null,
           );
-          const wifiRssi =
-            report.wifi?.connectedToSoshin && report.wifi.soshinRssi != null
-              ? report.wifi.soshinRssi
-              : null;
-          setSignal((prev) =>
-            appendSample(prev, { t: report.timestamp, ble: strongestBle, wifi: wifiRssi }),
-          );
+          lastBleRef.current = strongestBle;
 
           // Verdict flip → slam the console alert (PATTERN GREEN / TARGET LOST).
           const v = controller.lastReportResult?.presence?.present ?? null;
@@ -179,14 +177,25 @@ export default function JushinScreen({
         } catch (e) {
           console.warn("[receiver] tick failed:", e);
           const msg = e instanceof Error ? e.message : String(e);
-          setError(msg);
-          setAlert({
-            title: "SENSOR FAULT",
-            jp: "機器異常",
-            sub: "SYNC CYCLE INTERRUPTED — CHECK MAGI LINK",
-            detail: msg,
-            tone: colors.red,
-          });
+          // The fusion server keeps sessions in memory: a server restart
+          // drops them. Re-ensure silently and let the next tick resume.
+          if (msg.includes("report failed: 404")) {
+            const ok = await ensureSession(serverUrl, {
+              sessionId: settings.sessionId,
+              roomId: settings.roomId,
+              secret: settings.secret,
+            });
+            console.log(`[receiver] session re-ensure after 404: ${ok}`);
+          } else {
+            setError(msg);
+            setAlert({
+              title: "SENSOR FAULT",
+              jp: "機器異常",
+              sub: "SYNC CYCLE INTERRUPTED — CHECK MAGI LINK",
+              detail: msg,
+              tone: colors.red,
+            });
+          }
         } finally {
           busyRef.current = false;
         }
@@ -281,10 +290,16 @@ export default function JushinScreen({
             <Panel
               title="SIGNAL TRACE / 電波"
               tone={colors.cyan}
-              accentLabel={running ? "LIVE · 5s POLL" : "STANDBY"}
+              accentLabel={running ? "LIVE · 0.5s POLL" : "STANDBY"}
               grid
             >
-              <SignalGraph samples={signal} />
+              <LiveSignalGraph
+                sensorsRef={sensorsRef}
+                lastBleRef={lastBleRef}
+                serverUrl={serverUrl}
+                sessionId={settings.sessionId}
+                resetKey={traceReset}
+              />
             </Panel>
 
             {/* AT-FIELD — device-side fused confidence */}
@@ -569,6 +584,57 @@ function computeLocal(report: DeviceReport): LocalConfidence {
   }
   const fused = fuse(confs);
   return { ble, wifi, ultrasonic, fused, present: decide(fused) };
+}
+
+/**
+ * Owns the 0.5 s WiFi sampler (BLE comes from the 5 s presence tick) so only
+ * this panel re-renders — the rest of the HUD stays at its own cadence.
+ */
+function LiveSignalGraph({
+  sensorsRef,
+  lastBleRef,
+  serverUrl,
+  sessionId,
+  resetKey,
+}: {
+  sensorsRef: React.MutableRefObject<NativeSensors | null>;
+  lastBleRef: React.MutableRefObject<number | null>;
+  serverUrl: string;
+  sessionId: string;
+  resetKey: number;
+}) {
+  const [samples, setSamples] = useState<SignalSample[]>([]);
+  const busy = useRef(false);
+
+  useEffect(() => {
+    setSamples([]);
+    const id = setInterval(async () => {
+      if (busy.current) return;
+      const sensors = sensorsRef.current;
+      if (!sensors) return;
+      busy.current = true;
+      try {
+        const o = await sensors.wifi.observe();
+        const t = Date.now();
+        const wifi = o.connectedToSoshin ? o.soshinRssi : null;
+        const ble = lastBleRef.current;
+        setSamples((prev) => appendSample(prev, { t, ble, wifi }));
+        void postTelemetry(serverUrl, sessionId, {
+          deviceId: DEVICE_ID,
+          t,
+          ble,
+          wifi,
+        });
+      } catch {
+        /* the presence loop owns failure reporting */
+      } finally {
+        busy.current = false;
+      }
+    }, 500);
+    return () => clearInterval(id);
+  }, [resetKey, serverUrl, sessionId, sensorsRef, lastBleRef]);
+
+  return <SignalGraph samples={samples} />;
 }
 
 function fmtClock(s: number): string {

@@ -77,6 +77,9 @@ cd evaluation && npm run run:sample
 ### Server API
 - `POST /api/sessions` — create a session (shares the rolling-code secret).
 - `POST /api/reports` — ingest a transmitter/receiver `DeviceReport`.
+- `POST /api/sessions/:id/telemetry` — 0.5 s graph sample (BLE/WiFi RSSI only).
+- `GET  /api/sessions/:id/series` — live BLE/WiFi/SNR series for the dashboard.
+- `GET  /dashboard/:id` — live browser charts (BLE/WiFi RSSI + ultrasonic SNR).
 - `GET  /api/sessions/:id/presence` — latest per-device presence + three-channel link stats.
 - `POST /api/sessions/:id/hotspot` — transmitter publishes its live AutoHotspot.
 - `GET  /api/sessions/:id/hotspot` — receivers read it and auto-join.

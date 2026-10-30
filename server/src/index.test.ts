@@ -523,6 +523,12 @@ test("live series + dashboard expose BLE/WiFi/SNR", async () => {
     headers: { "content-type": "application/json" },
     body: JSON.stringify(reportPayload(code)),
   });
+  const telemetry = await app.request("/api/sessions/s1/telemetry", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ deviceId: "d1", t: ALIGNED + 500, ble: -60, wifi: -61 }),
+  });
+  expect(telemetry.status).toBe(202);
 
   const series = await app.request("/api/sessions/s1/series");
   expect(series.status).toBe(200);
@@ -530,10 +536,12 @@ test("live series + dashboard expose BLE/WiFi/SNR", async () => {
     devices: { deviceId: string; points: { ble: number | null; wifi: number | null; snr: number | null }[] }[];
   };
   expect(body.devices).toHaveLength(1);
-  const point = body.devices[0]!.points.at(-1)!;
+  const points = body.devices[0]!.points;
+  expect(points.length).toBeGreaterThanOrEqual(2);
+  expect(points.at(-1)).toMatchObject({ ble: -60, wifi: -61, snr: null });
+  const point = points[0]!;
   expect(point.ble).toBe(-55);
   expect(point.wifi).toBe(-50);
-  expect(point.snr).toBeNull();
 
   const page = await app.request("/dashboard/s1");
   expect(page.status).toBe(200);

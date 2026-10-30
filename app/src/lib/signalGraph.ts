@@ -18,8 +18,8 @@ export interface SignalSample {
 
 export type SignalKey = "ble" | "wifi";
 
-/** Rolling window kept for the graph (5 s poll × 120 ≈ 10 min). */
-export const SIGNAL_WINDOW = 120;
+/** Rolling window kept for the graph (0.5 s poll × 600 ≈ 5 min). */
+export const SIGNAL_WINDOW = 600;
 
 /** dBm range drawn on the graph. */
 export const SIGNAL_Y_MIN = -100;

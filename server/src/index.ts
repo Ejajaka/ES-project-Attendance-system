@@ -346,7 +346,38 @@ export function createApp(store: Store, sessions: SessionRegistry): Hono {
     const id = c.req.param("id");
     if (!sessions.get(id)) return c.json({ error: "unknown session" }, 404);
     c.header("cache-control", "no-store");
-    return c.json(buildSeries(id, store.reportsForSession(id)));
+    return c.json(
+      buildSeries(id, store.reportsForSession(id), {
+        telemetry: store.telemetryForSession(id),
+      }),
+    );
+  });
+
+  // Fast graph samples (BLE/WiFi at 0.5 s) — no presence computation.
+  app.post("/api/sessions/:id/telemetry", async (c) => {
+    const id = c.req.param("id");
+    if (!sessions.get(id)) return c.json({ error: "unknown session" }, 404);
+    let body: {
+      deviceId?: string;
+      t?: number;
+      ble?: number | null;
+      wifi?: number | null;
+    };
+    try {
+      body = (await c.req.json()) as typeof body;
+    } catch {
+      return c.json({ error: "invalid JSON" }, 400);
+    }
+    if (!body?.deviceId) return c.json({ error: "deviceId is required" }, 400);
+    const num = (v: unknown): number | null =>
+      typeof v === "number" && Number.isFinite(v) ? v : null;
+    store.addTelemetry(id, {
+      deviceId: body.deviceId,
+      t: num(body.t) ?? Date.now(),
+      ble: num(body.ble),
+      wifi: num(body.wifi),
+    });
+    return c.json({ ok: true }, 202);
   });
 
   // A transmitter announces its (system-assigned) hotspot SSID/passphrase so

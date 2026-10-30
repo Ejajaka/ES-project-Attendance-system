@@ -61,6 +61,9 @@ export interface Store {
   addCalibration(sample: CalibrationSample): void;
   calibrationForSession(sessionId: string): CalibrationSample[];
   clearCalibration(sessionId: string): void;
+  /** Append a lightweight graph sample (BLE/WiFi RSSI at 0.5 s). */
+  addTelemetry(sessionId: string, point: TelemetryPoint): void;
+  telemetryForSession(sessionId: string): TelemetryPoint[];
   /** Drop this session's reports + attendance timeline (keeps roster/calibration). */
   clearAttendance(sessionId: string): void;
   /** Track the strongest room signal each device has produced this session. */
@@ -97,6 +100,15 @@ export interface SignalBaseline {
   wifi: number | null;
 }
 
+/** Lightweight 0.5 s graph sample (no presence computation). */
+export interface TelemetryPoint {
+  deviceId: string;
+  /** Sample timestamp (ms epoch). */
+  t: number;
+  ble: number | null;
+  wifi: number | null;
+}
+
 /** Whole-store serialization (for the JSON-file persistence in server.ts). */
 export interface StoreSnapshot {
   reports: DeviceReport[];
@@ -106,6 +118,7 @@ export interface StoreSnapshot {
   rosters: [string, Student[]][];
   timelines: [string, DeviceTimeline[]][];
   calibrations?: CalibrationSample[];
+  telemetry?: [string, TelemetryPoint[]][];
 }
 
 export class MemoryStore implements Store {
@@ -118,6 +131,7 @@ export class MemoryStore implements Store {
   private dwells = new Map<string, Map<string, DwellState>>();
   private calibrations: CalibrationSample[] = [];
   private baselines = new Map<string, Map<string, SignalBaseline>>();
+  private telemetry = new Map<string, TelemetryPoint[]>();
 
   addReport(report: DeviceReport): void {
     this.reports.push(report);
@@ -295,10 +309,23 @@ export class MemoryStore implements Store {
     this.calibrations = this.calibrations.filter((c) => c.sessionId !== sessionId);
   }
 
+  addTelemetry(sessionId: string, point: TelemetryPoint): void {
+    const arr = this.telemetry.get(sessionId) ?? [];
+    arr.push(point);
+    // 0.5 s sampling → cap at ~8 minutes of graph history per session.
+    if (arr.length > 2000) arr.splice(0, arr.length - 2000);
+    this.telemetry.set(sessionId, arr);
+  }
+
+  telemetryForSession(sessionId: string): TelemetryPoint[] {
+    return this.telemetry.get(sessionId) ?? [];
+  }
+
   clearAttendance(sessionId: string): void {
     this.reports = this.reports.filter((r) => r.sessionId !== sessionId);
     this.timelines.delete(sessionId);
     this.dwells.delete(sessionId);
+    this.telemetry.delete(sessionId);
     // A fresh register should learn each phone's baseline again.
     this.baselines.delete(sessionId);
   }
@@ -346,6 +373,7 @@ export class MemoryStore implements Store {
       rosters: [...this.rosters.entries()],
       timelines: [...this.timelines.entries()].map(([k, m]) => [k, [...m.values()]]),
       calibrations: this.calibrations,
+      telemetry: [...this.telemetry.entries()],
     };
   }
 
@@ -362,5 +390,6 @@ export class MemoryStore implements Store {
       ]),
     );
     this.calibrations = s.calibrations ?? [];
+    this.telemetry = new Map(s.telemetry ?? []);
   }
 }

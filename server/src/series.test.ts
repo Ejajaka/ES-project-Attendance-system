@@ -54,6 +54,26 @@ test("buildSeries groups per device, keeps nulls, and sorts by time", () => {
   expect(d1.points[1]).toMatchObject({ ble: -55, wifi: -50, snr: null });
 });
 
+test("buildSeries merges 0.5 s telemetry with the 5 s reports", () => {
+  const now = 100_000;
+  const payload = buildSeries("s1", [report("d1", now - 5000, -40, -40, 50)], {
+    now,
+    windowMs: 60_000,
+    telemetry: [
+      { deviceId: "d1", t: now - 4000, ble: -55, wifi: -60 },
+      { deviceId: "d1", t: now - 3000, ble: -56, wifi: -61 },
+      // Same timestamp as the report: keep the report's SNR.
+      { deviceId: "d1", t: now - 5000, ble: -40, wifi: -40 },
+    ],
+  });
+
+  const points = payload.devices[0]!.points;
+  expect(points).toHaveLength(3);
+  expect(points[0]).toMatchObject({ t: now - 5000, ble: -40, wifi: -40, snr: 50 });
+  expect(points[1]).toMatchObject({ t: now - 4000, ble: -55, wifi: -60, snr: null });
+  expect(points[2]).toMatchObject({ t: now - 3000, ble: -56, wifi: -61 });
+});
+
 test("buildSeries caps each device to the newest points", () => {
   const now = 10_000;
   const reports = Array.from({ length: SERIES_MAX_POINTS + 30 }, (_, i) =>

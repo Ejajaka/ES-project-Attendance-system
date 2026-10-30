@@ -207,7 +207,7 @@ export function SignalGraph({
       <View style={{ height: AXIS, flexDirection: "row", justifyContent: "space-between" }}>
         <Text style={[text.tiny, { color: colors.faint, letterSpacing: 1 }]}>← PAST</Text>
         <Text style={[text.tiny, { color: colors.faint, letterSpacing: 1 }]}>
-          dBm · {SIGNAL_Y_MIN}..{SIGNAL_Y_MAX} · 5s POLL · NOW →
+          dBm · {SIGNAL_Y_MIN}..{SIGNAL_Y_MAX} · 0.5s POLL · NOW →
         </Text>
       </View>
     </View>

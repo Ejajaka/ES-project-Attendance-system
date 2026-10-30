@@ -90,10 +90,21 @@ export class JushinController {
       this.sensors.ultrasonic.listen(),
     ]);
 
-    // Smooth RSSI with a rolling median (robust to fades/spikes).
+    // Deduplicate repeated advertisements from the same node (keep the
+    // strongest RSSI and any rolling code), then smooth with a rolling median.
+    const byNode = new Map<string, (typeof bleRaw.readings)[number]>();
+    for (const reading of bleRaw.readings) {
+      const prev = byNode.get(reading.nodeId);
+      if (!prev) {
+        byNode.set(reading.nodeId, { ...reading });
+        continue;
+      }
+      const stronger = reading.rssi > prev.rssi ? reading : prev;
+      byNode.set(reading.nodeId, { ...stronger, code: reading.code ?? prev.code });
+    }
     const ble = {
       ...bleRaw,
-      readings: bleRaw.readings.map((r) => ({
+      readings: [...byNode.values()].map((r) => ({
         ...r,
         rssi: this.smoothBle(r.nodeId, r.rssi),
       })),
