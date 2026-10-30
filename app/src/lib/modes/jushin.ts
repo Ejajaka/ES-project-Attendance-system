@@ -25,6 +25,8 @@ export class JushinController {
   private startBio: BiometricCheck | null = null;
   private endBio: BiometricCheck | null = null;
   private lastResult: ReportResult | null = null;
+  // Reporting failure must not stop the local trace (e.g. walking off-network).
+  private lastError: string | null = null;
   // RSSI is noisy; report a rolling median so the room boundary doesn't twitch.
   private bleSmoothers = new Map<string, RssiSmoother>();
   private wifiSmoother = new RssiSmoother(5);
@@ -38,6 +40,11 @@ export class JushinController {
   /** Server verdict (presence + confidences) of the last tick, if any. */
   get lastReportResult(): ReportResult | null {
     return this.lastResult;
+  }
+
+  /** Why the last report could not be delivered (null when it landed). */
+  get lastReportError(): string | null {
+    return this.lastError;
   }
 
   /**
@@ -141,7 +148,14 @@ export class JushinController {
       biometric: this.startBio ?? undefined,
     };
 
-    this.lastResult = await this.reporter.send(report);
+    try {
+      this.lastResult = await this.reporter.send(report);
+      this.lastError = null;
+    } catch (e) {
+      // Off-network is normal while walking: keep sensing + graphing locally.
+      this.lastError = e instanceof Error ? e.message : String(e);
+      this.lastResult = null;
+    }
     return report;
   }
 

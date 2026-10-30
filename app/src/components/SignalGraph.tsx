@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Text, View } from "react-native";
+import { averageRecent } from "shared";
 import {
   lastPoint,
   latest,
@@ -99,6 +100,8 @@ export function SignalGraph({
   const plotW = Math.max(0, width - GUTTER);
   const plotH = Math.max(0, height - AXIS);
   const ready = width > 0 && plotW > 0 && plotH > 0;
+  const wifiSamples = samples.map((s) => s.wifi).filter((v): v is number => v != null);
+  const avgWifi = averageRecent(wifiSamples, 5);
 
   return (
     <View style={{ gap: spacing.sm }}>
@@ -113,6 +116,9 @@ export function SignalGraph({
       >
         <Legend label={SERIES.ble.label} value={latest(samples, "ble")} tone={SERIES.ble.tone} />
         <Legend label={SERIES.wifi.label} value={latest(samples, "wifi")} tone={SERIES.wifi.tone} />
+        <Text style={[text.tiny, { color: colors.faint, letterSpacing: 1 }]}>
+          AVG WIFI {avgWifi == null ? "—" : `${Math.round(avgWifi)} dBm`}
+        </Text>
         <View style={{ flex: 1 }} />
         <Text style={[text.tiny, { color: colors.faint, letterSpacing: 1 }]}>
           {samples.length === 0
@@ -172,11 +178,7 @@ export function SignalGraph({
                   style={{ position: "absolute", left: GUTTER, top: 0, width: plotW, height: plotH }}
                 >
                   {toSegments(samples, key, plotW, plotH).map((seg) => (
-                    <SegmentLine
-                      key={`${key}-${Math.round(seg.x)}-${Math.round(seg.y)}`}
-                      seg={seg}
-                      tone={tone}
-                    />
+                    <SegmentLine key={`${key}-${seg.from}`} seg={seg} tone={tone} />
                   ))}
                   {point && <Endpoint point={point} tone={tone} />}
                 </View>

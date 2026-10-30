@@ -3,7 +3,7 @@ import { generateTOTP, verifyTOTP, type DeviceReport } from "shared";
 import { SoshinController, type SoshinConfig } from "./modes/soshin";
 import { JushinController, type JushinConfig } from "./modes/jushin";
 import { MockSensors } from "./mockSensors";
-import { MockReporter } from "./reporter";
+import { MockReporter, type Reporter, type ReportResult } from "./reporter";
 
 const SECRET = new TextEncoder().encode("app-shared-secret");
 const ALIGNED = Math.floor(1_700_000_000 / 30_000) * 30_000;
@@ -118,6 +118,24 @@ test("duplicate BLE advertisements collapse to one reading per node", async () =
   expect(report.ble?.readings).toHaveLength(2);
   const node = report.ble?.readings.find((r) => r.nodeId === "esp32-tx1");
   expect(node?.rssi).toBe(-50); // kept the stronger advertisement
+});
+
+test("Jushin keeps the local report when the server is unreachable", async () => {
+  const sensors = new MockSensors();
+  sensors.bleReadings = [{ nodeId: "esp32-tx1", rssi: -40 }];
+  sensors.wifiState = { connectedToSoshin: true, soshinRssi: -30 };
+  const unreachable: Reporter = {
+    async send(): Promise<ReportResult> {
+      throw new Error("Network request failed");
+    },
+  };
+  const jushin = new JushinController(sensors, jushinConfig, unreachable);
+  const report = await jushin.tick(ALIGNED);
+
+  expect(report.ble?.readings).toHaveLength(1);
+  expect(report.wifi?.soshinRssi).toBe(-30);
+  expect(jushin.lastReportError).toContain("Network request failed");
+  expect(jushin.lastReportResult).toBeNull();
 });
 
 test("Jushin endAttendance performs a biometric and stops sensing", async () => {

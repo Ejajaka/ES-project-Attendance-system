@@ -111,8 +111,11 @@ app — every screen dumps raw sensor values, per-modality + fused confidences,
 server verdicts with RTT, roll code state, and a **ROOM MONITOR** that lists
 *every* device currently reporting to the session (so one phone shows the other's
 presence). The receiver console also draws a **live BLE/WiFi RSSI trace**
-(5 s poll, 10 min window), so you can walk the phone away and watch the signal
-fall. Each monitor row carries the device's three-channel **link stats**
+(0.5 s WiFi, 5 s BLE), so you can walk the phone away and watch the signal
+fall. The local verdict is **absent only when the 5-sample average WiFi is
+weaker than −55 dBm AND the latest BLE is weaker than −65 dBm**; either channel
+strong (or a single WiFi spike) keeps it present. Each monitor row carries the
+device's three-channel **link stats**
 (`B● W◐ U○` + quality + age): the receiver sees its own link to the
 transmitter, and the transmitter sees every receiver's link back to it.
 Japanese labels (送信/受信/診断/試験) remain as brand accents behind the plain

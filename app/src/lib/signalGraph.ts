@@ -48,6 +48,8 @@ export function scaleY(
 
 /** One rendered line segment between two consecutive non-null readings. */
 export interface SignalSegment {
+  /** Index of the segment's start point (stable React key). */
+  from: number;
   /** Midpoint x (px from the left of the plot area). */
   x: number;
   /** Midpoint y (px from the top of the plot area). */
@@ -107,6 +109,7 @@ export function toSegments(
     const dx = b.x - a.x;
     const dy = b.y - a.y;
     segments.push({
+      from: i - 1,
       x: a.x + dx / 2,
       y: a.y + dy / 2,
       length: Math.hypot(dx, dy),

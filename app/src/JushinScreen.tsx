@@ -7,6 +7,8 @@ import {
   fuse,
   decide,
   summarizeLink,
+  signalPresence,
+  averageRecent,
   type DeviceReport,
   type LinkSummary,
 } from "shared";
@@ -84,14 +86,37 @@ export default function JushinScreen({
   const [alert, setAlert] = useState<ConsoleAlert | null>(null);
   const [joinSource, setJoinSource] = useState<string>("—");
   const [traceReset, setTraceReset] = useState(0);
+  const [signalVerdict, setSignalVerdict] = useState<boolean | null>(null);
   const controllerRef = useRef<JushinController | null>(null);
   const sensorsRef = useRef<NativeSensors | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastBleRef = useRef<number | null>(null);
+  const bleAtRef = useRef(0);
+  const wifiHistoryRef = useRef<number[]>([]);
+  const wifiAtRef = useRef(0);
   const busyRef = useRef(false);
   const prevVerdictRef = useRef<boolean | null>(null);
 
   const { devices } = useSessionPresence(serverUrl, settings.sessionId, running);
+
+  /**
+   * Local absent/present rule: rolling-average WiFi (smooths spikes) AND the
+   * latest BLE (delayed scan). Both weak → absent. Freshness caps stop a
+   * paused sampler or a stale BLE beacon from holding "present".
+   */
+  const handleSignalSample = (wifi: number | null) => {
+    if (wifi != null) {
+      const history = wifiHistoryRef.current;
+      history.push(wifi);
+      if (history.length > 5) history.shift();
+      wifiAtRef.current = Date.now();
+    }
+    const avgWifi = averageRecent(wifiHistoryRef.current, 5);
+    const wifiFresh = Date.now() - wifiAtRef.current <= 3000 ? avgWifi : null;
+    const bleFresh = Date.now() - bleAtRef.current <= 8000 ? lastBleRef.current : null;
+    const next = signalPresence({ avgWifi: wifiFresh, ble: bleFresh }).present;
+    setSignalVerdict((prev) => (prev === next ? prev : next));
+  };
 
   const start = async () => {
     setError(null);
@@ -132,6 +157,10 @@ export default function JushinScreen({
       sensorsRef.current = sensors;
       setTraceReset((n) => n + 1);
       lastBleRef.current = null;
+      bleAtRef.current = 0;
+      wifiHistoryRef.current = [];
+      wifiAtRef.current = 0;
+      setSignalVerdict(null);
       prevVerdictRef.current = null;
 
       const loop = async () => {
@@ -144,12 +173,30 @@ export default function JushinScreen({
           setTicks((n) => n + 1);
           setLocal(computeLocal(report));
 
+          // A dropped server link while walking is expected; only surface real
+          // sensor faults. A 404 means the in-memory session was lost — fix it.
+          const reportError = controller.lastReportError;
+          if (reportError?.includes("404")) {
+            const ok = await ensureSession(serverUrl, {
+              sessionId: settings.sessionId,
+              roomId: settings.roomId,
+              secret: settings.secret,
+            });
+            console.log(`[receiver] session re-ensure after 404: ${ok}`);
+          }
+          setError(
+            reportError && !/Network request failed|report failed/.test(reportError)
+              ? reportError
+              : null,
+          );
+
           // Feed the live trace: strongest BLE beacon + the joined AP's RSSI.
           const strongestBle = (report.ble?.readings ?? []).reduce<number | null>(
             (best, r) => (best == null || r.rssi > best ? r.rssi : best),
             null,
           );
           lastBleRef.current = strongestBle;
+          bleAtRef.current = Date.now();
 
           // Verdict flip → slam the console alert (PATTERN GREEN / TARGET LOST).
           const v = controller.lastReportResult?.presence?.present ?? null;
@@ -242,7 +289,7 @@ export default function JushinScreen({
   const uptime = startedAt ? Math.round((Date.now() - startedAt) / 1000) : 0;
   const sp = lastResult?.presence ?? null;
   const rtt = lastResult?.rttMs ?? null;
-  const verdict = sp?.present;
+  const verdict = signalVerdict ?? sp?.present ?? null;
   // Connection stats to the transmitter, from this phone's last report. The
   // server's verdict overrules the client's ultrasonic validity when present.
   const link: LinkSummary | null = lastReport
@@ -280,7 +327,11 @@ export default function JushinScreen({
               sub={
                 verdict == null
                   ? running ? "AWAITING SYNC" : "ENGAGE TO BEGIN"
-                  : sp!.fused >= 0.5 ? `AT-FIELD CONFIRMED · ${sp!.fused.toFixed(2)}` : `AT-FIELD WEAK · ${sp!.fused.toFixed(2)}`
+                  : sp
+                    ? sp.fused >= 0.5
+                      ? `AT-FIELD CONFIRMED · ${sp.fused.toFixed(2)}`
+                      : `AT-FIELD WEAK · ${sp.fused.toFixed(2)}`
+                    : `LOCAL RULE · ${signalVerdict ? "SIGNAL PRESENT" : "SIGNAL WEAK"}`
               }
               tone={verdict == null ? (running ? colors.amber : colors.dim) : verdict ? colors.green : colors.red}
               plate={verdict == null ? false : true}
@@ -299,6 +350,7 @@ export default function JushinScreen({
                 serverUrl={serverUrl}
                 sessionId={settings.sessionId}
                 resetKey={traceReset}
+                onSample={handleSignalSample}
               />
             </Panel>
 
@@ -596,15 +648,19 @@ function LiveSignalGraph({
   serverUrl,
   sessionId,
   resetKey,
+  onSample,
 }: {
   sensorsRef: React.MutableRefObject<NativeSensors | null>;
   lastBleRef: React.MutableRefObject<number | null>;
   serverUrl: string;
   sessionId: string;
   resetKey: number;
+  onSample?: (wifi: number | null) => void;
 }) {
   const [samples, setSamples] = useState<SignalSample[]>([]);
   const busy = useRef(false);
+  const onSampleRef = useRef(onSample);
+  onSampleRef.current = onSample;
 
   useEffect(() => {
     setSamples([]);
@@ -619,6 +675,7 @@ function LiveSignalGraph({
         const wifi = o.connectedToSoshin ? o.soshinRssi : null;
         const ble = lastBleRef.current;
         setSamples((prev) => appendSample(prev, { t, ble, wifi }));
+        onSampleRef.current?.(wifi);
         void postTelemetry(serverUrl, sessionId, {
           deviceId: DEVICE_ID,
           t,

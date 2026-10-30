@@ -7,4 +7,5 @@ export * from "./simulator";
 export * from "./rollingCode";
 export * from "./confidence";
 export * from "./fusion";
+export * from "./signalPresence";
 export * from "./evaluation";
