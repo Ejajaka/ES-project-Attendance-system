@@ -6,6 +6,48 @@ Branch: `feat/esp32-transmitter-attendance`.
 
 ---
 
+## 0. Current deployment — open `atlas` (2026-10-31)
+
+> Sections 3–7 below describe the older Windows deployment (`Shusseki-ESP32` +
+> `Shusseki-Room` NAPT). Keep them as history. The current setup uses one open
+> network.
+
+Topology:
+
+```
+phone ──WiFi──> "atlas" (ESP32 SoftAP, open, 192.168.4.1)
+PC ── optional ──> "atlas"   only when the server/dashboard is needed
+```
+
+Firmware (`esp32-transmitter/src/main.c`):
+
+- `AP_SSID "atlas"`, `AP_PASS ""`, `WIFI_AUTH_OPEN`: no password.
+- `STA_SSID ""`: no uplink and no NAPT. The ESP32 does not route client traffic.
+- BLE advertising starts before the server announce, so the beacon is visible
+  with no server.
+- `SERVER_URL` stays compile-time. The default (`192.168.137.1`) is not reachable
+  from the `atlas` AP. This is fine for the on-phone trace.
+
+The phone:
+
+- Joins `atlas` with a bare-SSID `WifiNetworkSpecifier`.
+- Samples WiFi every 0.5 s. BLE follows the 5 s presence tick.
+- Applies the local rule without a server: absent only when the 5-sample average
+  WiFi is weaker than −55 dBm and the latest BLE is weaker than −65 dBm.
+- Drops failed reports silently. The trace keeps running off-network.
+
+Runbook:
+
+1. Flash: `cd esp32-transmitter && pio run -t upload -p /dev/ttyUSB0`.
+   If that uploader fails, flash the built images directly with `esptool` at
+   115200 baud.
+2. Phone: WiFi on, then app → RECEIVER → ENGAGE.
+3. Server/dashboard (optional): put the PC on `atlas` (it becomes
+   `192.168.4.3`) and set the app's CONFIG server URL to
+   `http://192.168.4.3:8787`. The PC loses internet while it stays on `atlas`.
+
+---
+
 ## 1. What this adds, in one paragraph
 
 The repo originally had a phone-based **transmitter (Soshin)** and **receiver

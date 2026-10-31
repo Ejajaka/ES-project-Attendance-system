@@ -44,6 +44,12 @@ sharpen or add a term, update this file inline.
 - **CombiningRule** — the rule used to merge several BLE/WiFi node readings into
   one per-modality Confidence (e.g. `max`, `avg`, `best`). Default: `max`
   (a single strong node reading implies "within walkable distance of the room").
+- **Telemetry** — a lightweight 0.5 s BLE/WiFi sample from a Device for the live
+  trace. Telemetry is not a Report and does not affect presence.
+- **SignalRule** — the receiver's local absent/present rule: absent only when
+  the 5-sample average WiFi RSSI is weaker than −55 dBm and the latest BLE RSSI
+  is weaker than −65 dBm. Missing or stale values count as weak (WiFi older
+  than 3 s, BLE older than 8 s). Either channel strong keeps "present".
 
 ## Roles in the pipeline
 

@@ -154,7 +154,10 @@ For USB-connected devices the fusion server is reachable via
 fusion (noisy-or / average / weighted), evaluation metrics, the fusion server
 with the full ingest→presence→evaluate pipeline, the two-mode Expo app with a
 clean sensor seam, native-module scaffolds (BLE/WiFi/ultrasonic/biometric), the
-comparative evaluation runner, and build versioning. Verified on real hardware
+comparative evaluation runner, and build versioning. The ESP32 room node
+(`esp32-transmitter/`) hosts the open `atlas` AP and BLE beacon. The receiver
+draws a 0.5 s BLE/WiFi trace with a local signal rule, and the server serves a
+live dashboard (`/dashboard/:id`). Verified on real hardware
 (Pixel 8a + Galaxy M34): BLE advertise/scan, WiFi RSSI, LocalOnlyHotspot, and
 the ultrasonic mic all exercise on-device; the ultrasonic speaker→mic loopback
 does **not** pass ~18.5 kHz on the Pixel 8a (see PLAN §3/§4 — expected on

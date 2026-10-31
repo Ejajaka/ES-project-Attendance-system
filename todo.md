@@ -234,3 +234,31 @@ Full narrative: `docs/session-2026-09-17-report.md`.
 stale `node_modules/expo-modules-core/android/.cxx` on `No compatible library
 found`, and `EXPO_PUBLIC_SERVER_URL=http://127.0.0.1:8787` is baked at bundle
 time — each phone needs `adb reverse tcp:8787 tcp:8787`.
+## P11 — Open `atlas` node + live signal trace (session 2026-10-31) — DONE ✅
+
+Delivered and verified on hardware (Samsung SM-G990B2 + ESP32-D0WD-V3):
+- ESP32 hosts the open **`atlas`** AP (no password, `192.168.4.1`); `STA_SSID ""`,
+  no NAPT; BLE advertising starts before the blocking server announce.
+- Receiver joins `atlas`; BLE readings deduplicated by node (fixes the duplicate
+  `esp32-tx1` React-key warning).
+- Live `SIGNAL TRACE / 電波` on the receiver: **0.5 s** WiFi sampling in an
+  isolated component (only the graph re-renders), BLE from the 5 s tick.
+- Local absence rule (`shared/src/signalPresence.ts`): absent only when the
+  5-sample average WiFi is weaker than −55 dBm AND the latest BLE is weaker than
+  −65 dBm; freshness caps (WiFi 3 s, BLE 8 s).
+- Off-network safety: report failures no longer throw or pop an alert; a 404
+  re-ensures the session silently.
+- Server: `POST /api/sessions/:id/telemetry`, `GET /api/sessions/:id/series`,
+  `GET /dashboard/:id` (BLE/WiFi/SNR canvas charts, 2 Hz poll).
+- Flashed via direct `esptool` at 115200 (the PIO uploader was flaky on the
+  clone board).
+
+Next:
+1. Continuous BLE scan (RSSI callback) — cut the 5 s BLE latency to <1 s.
+2. Persist `DEVICE_ID` — stop ghost devices in the dashboard and roster.
+3. Ultrasound spectrum: expose FFT/Goertzel bins in the report and plot them.
+4. BSSID-pinned `atlas` join or a MAC-suffixed SSID — the lab has SSID collisions.
+5. Cancel the native biometric prompt when `safeBio` times out; it currently
+   stays on screen until the user dismisses it.
+6. Release APK with an embedded bundle; the debug build needs Metro after a
+   restart, so a walked-away phone cannot relaunch standalone.
