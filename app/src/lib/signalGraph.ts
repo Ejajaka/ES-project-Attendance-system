@@ -3,7 +3,7 @@
  *
  * Each tick polls the transmitter's WiFi AP and BLE beacons; those raw dBm
  * readings are what the graph plots. Keeping the maths here (no React Native)
- * makes the scaling and segment geometry unit-testable.
+ * makes the scaling and dot geometry unit-testable.
  */
 
 /** One poll of the two proximity signals. Null = no reading on that tick. */
@@ -46,23 +46,19 @@ export function scaleY(
   return (1 - (clamped - min) / (max - min)) * height;
 }
 
-/** One rendered line segment between two consecutive non-null readings. */
-export interface SignalSegment {
-  /** Index of the segment's start point (stable React key). */
-  from: number;
-  /** Midpoint x (px from the left of the plot area). */
-  x: number;
-  /** Midpoint y (px from the top of the plot area). */
-  y: number;
-  /** Segment length in px. */
-  length: number;
-  /** Rotation in radians. */
-  angle: number;
-}
-
 /** A point in the plot area (used for the "latest reading" marker). */
 export interface SignalPoint {
   x: number;
+  y: number;
+}
+
+/** One rendered dot: a single non-null reading, positioned in the plot area. */
+export interface SignalDot {
+  /** Index of the sample the dot belongs to (stable React key). */
+  at: number;
+  /** x (px from the left of the plot area). */
+  x: number;
+  /** y (px from the top of the plot area). */
   y: number;
 }
 
@@ -86,37 +82,25 @@ function pointFor(
 }
 
 /**
- * Build the polyline segments for one series. Null readings break the line
- * (a gap, not a fake straight line) — a dropped BLE scan or a WiFi disconnect
- * should look like a gap on the trace.
+ * Build one dot per non-null reading for a series. A null reading gets no dot
+ * at all — a dropped BLE scan or a WiFi disconnect reads as a hole in the
+ * trace, never as a carried-forward or interpolated value.
  */
-export function toSegments(
+export function toDots(
   samples: readonly SignalSample[],
   key: SignalKey,
   width: number,
   height: number,
   min = SIGNAL_Y_MIN,
   max = SIGNAL_Y_MAX,
-): SignalSegment[] {
-  if (samples.length < 2 || width <= 0 || height <= 0) return [];
+): SignalDot[] {
+  if (width <= 0 || height <= 0) return [];
 
-  const points = pointFor(samples, key, width, height, min, max);
-  const segments: SignalSegment[] = [];
-  for (let i = 1; i < points.length; i++) {
-    const a = points[i - 1];
-    const b = points[i];
-    if (!a || !b) continue;
-    const dx = b.x - a.x;
-    const dy = b.y - a.y;
-    segments.push({
-      from: i - 1,
-      x: a.x + dx / 2,
-      y: a.y + dy / 2,
-      length: Math.hypot(dx, dy),
-      angle: Math.atan2(dy, dx),
-    });
-  }
-  return segments;
+  const dots: SignalDot[] = [];
+  pointFor(samples, key, width, height, min, max).forEach((point, i) => {
+    if (point) dots.push({ at: i, x: point.x, y: point.y });
+  });
+  return dots;
 }
 
 /** Latest non-null reading for a series (the live readout). */

@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { ScrollView, StyleSheet, Text, View } from "react-native";
+import { Pressable, ScrollView, View } from "react-native";
 import { generateTOTP } from "shared";
 import { NativeSensors } from "./lib/nativeSensors";
 import {
@@ -10,18 +10,23 @@ import {
 import { wifiGetPermissionsAsync } from "expo-shusseki-wifi";
 import { ultraGetPermissionsAsync, ultraLoopback, ultraListen } from "expo-shusseki-ultrasonic";
 import type { Settings } from "./settings";
-import { colors, MONO, spacing, text } from "./theme";
+import { colors, MONO } from "./theme";
+import { ScreenHeader } from "./components/tx/ScreenHeader";
+import { ValueRow } from "./components/tx/ValueRow";
+import { StateBadge, type StateTone } from "./components/tx/StateBadge";
 import {
-  AlertOverlay,
-  BloomField,
-  ConsoleHeader,
-  Divider,
-  HudButton,
-  Panel,
-  Scanlines,
-} from "./components/hud";
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Text } from "@/components/ui/text";
 
 type Log = (line: string) => void;
+
+type CheckState = "pending" | "pass" | "fail" | "skipped" | "none";
 
 interface Check {
   id: string;
@@ -32,7 +37,7 @@ interface Check {
   manual?: boolean;
 }
 
-/** One full-screen console alert. */
+/** Inline fold-out result plate (replaces the old full-screen alert overlay). */
 interface ConsoleAlert {
   title: string;
   jp?: string;
@@ -279,6 +284,8 @@ export default function SmokeScreen({
   const [summary, setSummary] = useState<string>("");
   const [busy, setBusy] = useState(false);
   const [alert, setAlert] = useState<ConsoleAlert | null>(null);
+  const [results, setResults] = useState<Record<string, CheckState>>({});
+  const [resultsOpen, setResultsOpen] = useState(false);
   const logRef = useRef<ScrollView | null>(null);
 
   // Mirror everything to console so `adb logcat -s ReactNativeJS` captures
@@ -289,16 +296,17 @@ export default function SmokeScreen({
     console.log(`[smoke] ${line}`);
   };
 
-  /** Cap a dump for the alert plate — keep the tail (most recent evidence). */
+  /** Cap a dump for the result plate — keep the tail (most recent evidence). */
   const trimDump = (lines: string[]): string => {
     const trimmed = lines.slice(-36);
     const head = lines.length > trimmed.length ? `… ${lines.length - trimmed.length} earlier line(s) trimmed\n` : "";
     return head + trimmed.join("\n");
   };
 
-  /** One check, one popup: PASS/FAIL with the full output dump. */
+  /** One check, one inline result card: PASS/FAIL with the full output dump. */
   const runOne = async (check: Check) => {
     setBusy(true);
+    setResults((r) => ({ ...r, [check.id]: "pending" }));
     const dump: string[] = [];
     const cap = (l: string) => {
       dump.push(l);
@@ -307,6 +315,7 @@ export default function SmokeScreen({
     console.log(`[smoke] ▶ ${check.label}`);
     try {
       const s = await check.run(cap);
+      setResults((r) => ({ ...r, [check.id]: "pass" }));
       setSummary(`${check.id}: PASS — ${check.label}`);
       setAlert({
         title: "CHECK PASSED",
@@ -315,8 +324,10 @@ export default function SmokeScreen({
         detail: `RESULT: ${s}\n\nOUTPUT:\n${trimDump(dump)}`,
         tone: colors.green,
       });
+      setResultsOpen(false);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      setResults((r) => ({ ...r, [check.id]: "fail" }));
       setSummary(`${check.id}: FAIL — ${check.label}`);
       setAlert({
         title: "CHECK FAILED",
@@ -325,6 +336,7 @@ export default function SmokeScreen({
         detail: `ERROR: ${msg}\n\nOUTPUT:\n${trimDump(dump)}`,
         tone: colors.red,
       });
+      setResultsOpen(false);
     }
     setBusy(false);
   };
@@ -345,17 +357,21 @@ export default function SmokeScreen({
       if (check.manual) {
         skipped += 1;
         cap(`⏭ ${check.label} (manual, skipped)`);
+        setResults((r) => ({ ...r, [check.id]: "skipped" }));
         continue;
       }
       automated += 1;
+      setResults((r) => ({ ...r, [check.id]: "pending" }));
       cap(`▶ ${check.label}`);
       try {
         const s = await check.run(cap);
         passed += 1;
+        setResults((r) => ({ ...r, [check.id]: "pass" }));
         cap(`  PASS ${s}`);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         failures.push(check.label);
+        setResults((r) => ({ ...r, [check.id]: "fail" }));
         cap(`  FAIL ${msg}`);
       }
     }
@@ -370,6 +386,7 @@ export default function SmokeScreen({
       detail: trimDump(dump),
       tone: failures.length > 0 ? colors.red : colors.green,
     });
+    setResultsOpen(false);
     setBusy(false);
   };
 
@@ -387,71 +404,210 @@ export default function SmokeScreen({
 
   const doneSomething = summary !== "";
 
+  const checkTone = (state: CheckState | undefined): StateTone => {
+    switch (state) {
+      case "pass":
+        return "ok";
+      case "fail":
+        return "bad";
+      case "skipped":
+        return "muted";
+      case "pending":
+        return "warn";
+      default:
+        return "outline";
+    }
+  };
+
+  const checkLabel = (state: CheckState | undefined): string => {
+    switch (state) {
+      case "pass":
+        return "PASS";
+      case "fail":
+        return "FAIL";
+      case "skipped":
+        return "SKIPPED";
+      case "pending":
+        return "RUNNING";
+      default:
+        return "NOT RUN";
+    }
+  };
+
   return (
-    <View style={styles.root}>
-      <BloomField a={colors.amber} b={colors.green} />
-      <ConsoleHeader
-        jp="診断"
-        en="DIAGNOSTICS · 自己診断"
-        stateLabel={summary || "STANDBY"}
-        stateTone={doneSomething && summary.includes("FAIL") ? colors.red : doneSomething ? colors.green : colors.dim}
+    <View className="flex-1 bg-background">
+      <ScreenHeader
+        title="Diagnostics · 診断"
+        onExit={onExit}
         right={
-          <HudButton variant="ghost" small title="EXIT" onPress={onExit} />
+          <StateBadge
+            tone={doneSomething && summary.includes("FAIL") ? "bad" : doneSomething ? "ok" : "muted"}
+          >
+            {busy ? "RUNNING…" : doneSomething ? "RUN COMPLETE" : "STANDBY"}
+          </StateBadge>
         }
       />
-      <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.scroll}>
-        {/* Suite result plate — carries the maestro smoke-summary contract. */}
-        <View style={styles.summaryPlate}>
-          <Scanlines />
-          <Text testID="smoke-summary" style={[text.interject, { fontSize: 33, color: colors.text, textAlign: "center" }]}>
-            {summary || "NOT RUN / 未実行"}
-          </Text>
-          <Text style={[text.interjectSub, { color: colors.dim }]}>DIAGNOSTICS SUITE</Text>
-        </View>
-
-        <Panel title="CHECKS / 項目" tone={colors.amber} accentLabel="PER-MODALITY">
-          {checksRef.current.map((c) => (
-            <View key={c.id} style={styles.checkRow}>
-              <Text style={[text.value, { color: colors.text, fontSize: 10, flex: 1 }]} numberOfLines={1}>
-                {c.manual ? "[MANUAL] " : ""}{c.label}
-              </Text>
-              <HudButton
-                variant="ghost"
-                small
-                title={busy ? "…" : "RUN"}
-                disabled={busy}
-                onPress={() => runOne(c)}
-              />
+      <ScrollView className="flex-1" contentContainerClassName="p-4 gap-4">
+        {/* Suite result — carries the maestro smoke-summary contract. */}
+        <Card>
+          <CardHeader>
+            <View className="flex-row items-center justify-between gap-2">
+              <CardTitle>Smoke suite</CardTitle>
+              <StateBadge
+                mono
+                tone={
+                  doneSomething && summary.includes("FAIL")
+                    ? "bad"
+                    : doneSomething
+                      ? "ok"
+                      : "muted"
+                }
+              >
+                DIAGNOSTICS
+              </StateBadge>
             </View>
-          ))}
-        </Panel>
+            <Text
+              testID="smoke-summary"
+              className="text-foreground"
+              style={{ fontFamily: MONO }}
+              numberOfLines={2}
+            >
+              {summary || "NOT RUN / 未実行"}
+            </Text>
+          </CardHeader>
+        </Card>
 
-        <View style={styles.controls}>
-          <HudButton variant="primary" title={busy ? "RUNNING…" : "RUN ALL / 全走査"} disabled={busy} onPress={() => void runAll()} />
-          <HudButton variant="ghost" title="EXIT" onPress={onExit} />
+        {/* Checks grouped as one card per modality row */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Checks</CardTitle>
+            <CardDescription>one modality per row · run=all skips manual</CardDescription>
+          </CardHeader>
+          <CardContent className="gap-2">
+            {checksRef.current.map((c) => {
+              const state = results[c.id];
+              return (
+                <Card key={c.id} className="bg-transparent py-3">
+                  <CardContent className="flex-row items-center gap-2 px-3">
+                    <View className="shrink">
+                      <Text className="text-sm text-foreground" numberOfLines={2}>
+                        {c.label}
+                      </Text>
+                      {c.manual && (
+                        <Text className="text-[10px] text-muted-foreground">manual only</Text>
+                      )}
+                    </View>
+                    <View className="flex-1" />
+                    <StateBadge mono tone={checkTone(state)}>
+                      {checkLabel(state)}
+                    </StateBadge>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      disabled={busy || c.manual}
+                      onPress={() => void runOne(c)}
+                    >
+                      <Text>{busy ? "…" : "RUN"}</Text>
+                    </Button>
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </CardContent>
+        </Card>
+
+        <View className="flex-row items-center gap-2">
+          <Button
+            className="flex-1"
+            disabled={busy}
+            onPress={() => void runAll()}
+          >
+            <Text>{busy ? "RUNNING…" : "RUN ALL / 全走査"}</Text>
+          </Button>
+          <Button className="flex-1" variant="outline" onPress={onExit}>
+            <Text>EXIT</Text>
+          </Button>
         </View>
 
-        <Panel title="OUTPUT / 出力" tone={colors.cyan} accentLabel="LOGCAT+MIRROR">
-          <ScrollView ref={logRef} style={styles.log} onContentSizeChange={() => logRef.current?.scrollToEnd({ animated: true })}>
-            {logLines.map((l, i) => (
-              <Text key={i} style={styles.logLine}>{l}</Text>
-            ))}
-          </ScrollView>
-        </Panel>
-      </ScrollView>
+        {/* Foldable JSON result (default collapsed) */}
+        {alert && (
+          <Card
+            className={
+              alert.tone === colors.red
+                ? "border-red-900/60"
+                : "border-emerald-900/60"
+            }
+          >
+            <CardContent>
+              <Pressable onPress={() => setResultsOpen((o) => !o)}>
+                <View className="gap-1">
+                  <View className="flex-row items-center justify-between gap-2">
+                    <Text className="text-sm font-semibold text-foreground">
+                      {alert.title}
+                    </Text>
+                    <StateBadge
+                      mono
+                      tone={alert.tone === colors.red ? "bad" : "ok"}
+                    >
+                      {resultsOpen ? "▼ DETAILS" : "▶ DETAILS"}
+                    </StateBadge>
+                  </View>
+                  {alert.sub && (
+                    <Text
+                      className="text-xs text-muted-foreground"
+                      style={{ fontFamily: MONO }}
+                    >
+                      {alert.sub}
+                    </Text>
+                  )}
+                  <Text className="text-[10px] text-muted-foreground">
+                    tap to {resultsOpen ? "collapse" : "expand"} the JSON result
+                  </Text>
+                  {resultsOpen && alert.detail && (
+                    <Text
+                      className="text-xs text-foreground"
+                      style={{ fontFamily: MONO }}
+                    >
+                      {alert.detail}
+                    </Text>
+                  )}
+                </View>
+              </Pressable>
+            </CardContent>
+          </Card>
+        )}
 
-      {/* Check results land here: full-screen plate with the dump, not an
-       * inline green update. */}
-      {alert && (
-        <AlertOverlay
-          title={alert.title}
-          jp={alert.jp}
-          sub={alert.sub}
-          detail={alert.detail}
-          tone={alert.tone}
-          onAck={() => setAlert(null)}
-        />
-      )}
+        {/* Logcat mirror */}
+        <Card>
+          <CardHeader>
+            <View className="flex-row items-center justify-between gap-2">
+              <CardTitle>Output</CardTitle>
+              <ValueRow label="lines" value={String(logLines.length)} tone="muted" />
+            </View>
+            <CardDescription>adb logcat -s ReactNativeJS mirror</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ScrollView
+              ref={logRef}
+              className="h-32 rounded-md border border-border bg-transparent p-2"
+              onContentSizeChange={() => logRef.current?.scrollToEnd({ animated: true })}
+            >
+              {logLines.map((l, i) => (
+                <Text
+                  key={i}
+                  className="text-xs leading-5 text-muted-foreground"
+                  style={{ fontFamily: MONO }}
+                >
+                  {l}
+                </Text>
+              ))}
+              {logLines.length === 0 && (
+                <Text className="text-xs text-muted-foreground">no output yet…</Text>
+              )}
+            </ScrollView>
+          </CardContent>
+        </Card>
+      </ScrollView>
     </View>
   );
 }
@@ -464,40 +620,3 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
     ),
   ]);
 }
-
-const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: colors.bg },
-  scroll: { padding: 0, gap: 0 },
-  summaryPlate: {
-    backgroundColor: colors.field,
-    paddingVertical: spacing.md,
-    paddingHorizontal: spacing.lg,
-    gap: 4,
-    alignItems: "center",
-    overflow: "hidden",
-    borderBottomWidth: 1,
-    borderBottomColor: colors.line,
-  },
-  checkRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.sm,
-    paddingVertical: 2,
-    minHeight: 26,
-  },
-  controls: {
-    flexDirection: "row",
-    gap: spacing.sm,
-    flexWrap: "wrap",
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.md,
-  },
-  log: {
-    maxHeight: 120,
-    backgroundColor: colors.field,
-    padding: spacing.xs,
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-  logLine: { fontFamily: MONO, fontSize: 10, color: colors.dim, lineHeight: 15 },
-});

@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
-import { ScrollView, StyleSheet, Text, View } from "react-native";
+import { ScrollView, View } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import {
   bleConfidence,
   wifiConfidence,
@@ -16,38 +17,29 @@ import { NativeSensors } from "./lib/nativeSensors";
 import { ATLAS_SSID, type Settings } from "./settings";
 import { JushinController, type JushinConfig } from "./lib/modes/jushin";
 import { HttpReporter, type ReportResult } from "./lib/reporter";
-import { ensureSession, postTelemetry, type ServerPresence } from "./lib/server";
+import { ensureSession, postNodeConfig, postNodeTime, postTelemetry, type ServerPresence } from "./lib/server";
 import { useSessionPresence } from "./lib/useSessionPresence";
-import { roleLabel } from "./lib/roles";
-import { linkChips, linkGlyph, linkStateLabel, modalityLabel } from "./lib/linkView";
+import { modalityLabel } from "./lib/linkView";
 import { appendSample, type SignalSample } from "./lib/signalGraph";
-import { DEVICE_ID } from "./identity";
-import { VERSION } from "./version";
-import { colors, MONO, spacing, text } from "./theme";
+import { loadPersistentDeviceId } from "./lib/persistentDeviceId";
+import { MONO } from "./theme";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Progress } from "@/components/ui/progress";
+import { Text } from "@/components/ui/text";
+import { JsonBlock } from "./components/JsonBlock";
+import { DataRow } from "./components/DataRow";
 import { DeviceLinkRow } from "./components/DeviceLinkRow";
 import { SignalGraph } from "./components/SignalGraph";
-import {
-  AlertOverlay,
-  BloomField,
-  ConsoleHeader,
-  Divider,
-  HudButton,
-  Interjection,
-  Lamp,
-  Meter,
-  Panel,
-  RawJson,
-  ValueRow,
-} from "./components/hud";
-
-/** One full-screen console alert. */
-interface ConsoleAlert {
-  title: string;
-  jp?: string;
-  sub?: string;
-  detail?: string;
-  tone: string;
-}
+import { logPayload } from "./components/debug/log";
+import { Chevron } from "./components/Chevron";
 
 const TICK_MS = 5000;
 
@@ -63,15 +55,25 @@ interface LocalConfidence {
   present: boolean;
 }
 
+/** Inline verdict event (replaces the old full-screen alert layer). */
+interface ConsoleEvent {
+  text: string;
+  /** Badge tone semantics: confirmed / interrupted / warning. */
+  kind: "ok" | "bad" | "warn";
+}
+
 export default function JushinScreen({
   settings,
   serverUrl,
   autoEngage,
+  bioSkip,
   onExit,
 }: {
   settings: Settings;
   serverUrl: string;
   autoEngage?: boolean;
+  /** Deep-link `?bio=0`: run headless without ever raising a biometric prompt. */
+  bioSkip?: boolean;
   onExit: () => void;
 }) {
   const [running, setRunning] = useState(false);
@@ -83,10 +85,16 @@ export default function JushinScreen({
   const [ticks, setTicks] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
-  const [alert, setAlert] = useState<ConsoleAlert | null>(null);
+  const [event, setEvent] = useState<ConsoleEvent | null>(null);
   const [joinSource, setJoinSource] = useState<string>("—");
+  const [selectedDevice, setSelectedDevice] = useState<ServerPresence | null>(null);
+  // This phone's report identity — resolved from disk at engage time, so a
+  // restart keeps reporting as the same device.
+  const [deviceId, setDeviceId] = useState<string | null>(null);
   const [traceReset, setTraceReset] = useState(0);
   const [signalVerdict, setSignalVerdict] = useState<boolean | null>(null);
+  // 1 s ticker so "last seen Xs ago" visibly counts down while engaged.
+  const [now, setNow] = useState(Date.now());
   const controllerRef = useRef<JushinController | null>(null);
   const sensorsRef = useRef<NativeSensors | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -98,6 +106,12 @@ export default function JushinScreen({
   const prevVerdictRef = useRef<boolean | null>(null);
 
   const { devices } = useSessionPresence(serverUrl, settings.sessionId, running);
+
+  useEffect(() => {
+    if (!running) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [running]);
 
   /**
    * Local absent/present rule: rolling-average WiFi (smooths spikes) AND the
@@ -120,6 +134,7 @@ export default function JushinScreen({
 
   const start = async () => {
     setError(null);
+    setEvent(null);
     try {
       const ok = await ensureSession(serverUrl, {
         sessionId: settings.sessionId,
@@ -128,6 +143,10 @@ export default function JushinScreen({
       });
       console.log(`[receiver] session ensure: ${ok}`);
 
+      // Point the room node's runtime config at THIS server and start pinning
+      // its clock: neither call may stall the engage path (fire-and-forget).
+      void postNodeConfig(serverUrl);
+      void postNodeTime();
       // Every device rides the same fixed open `atlas` network (the ESP32
       // room-node softAP). No passphrase: Android may still show its one-time
       // per-app approval dialog, but it never asks for a WiFi password.
@@ -135,10 +154,16 @@ export default function JushinScreen({
       setJoinSource(`ATLAS · OPEN · ${ssid}`);
       console.log(`[receiver] join target ${ssid} (open network, no password)`);
 
+      // A room register must not accumulate a ghost row per app launch:
+      // minting a fresh DEVICE_ID each restart left dead devices posing as
+      // absent students on the server. Resolve the persisted id instead.
+      const persistentDeviceId = await loadPersistentDeviceId();
+      setDeviceId(persistentDeviceId);
+
       const sensors = new NativeSensors();
       const reporter = new HttpReporter(serverUrl);
       const config: JushinConfig = {
-        deviceId: DEVICE_ID,
+        deviceId: persistentDeviceId,
         studentId: settings.studentId || undefined,
         studentName: settings.studentName || undefined,
         roomId: settings.roomId,
@@ -146,6 +171,8 @@ export default function JushinScreen({
         soshinSsid: ssid,
         // Empty = open network (atlas). CONFIG can still pin a WPA2 fallback.
         soshinPass: settings.soshinPass || undefined,
+        // Headless deep-link runs must never show a biometric prompt.
+        bioMode: bioSkip ? "skip" : "required",
       };
       const controller = new JushinController(sensors, config, reporter);
       const b = await controller.startAttendance();
@@ -172,6 +199,10 @@ export default function JushinScreen({
           setLastResult(controller.lastReportResult);
           setTicks((n) => n + 1);
           setLocal(computeLocal(report));
+          // Structured payload so the Debug screen can inspect the exact wire
+          // format of the last tick (report + server verdict).
+          logPayload("last-report", report);
+          logPayload("last-presence-result", controller.lastReportResult);
 
           // A dropped server link while walking is expected; only surface real
           // sensor faults. A 404 means the in-memory session was lost — fix it.
@@ -198,29 +229,25 @@ export default function JushinScreen({
           lastBleRef.current = strongestBle;
           bleAtRef.current = Date.now();
 
-          // Verdict flip → slam the console alert (PATTERN GREEN / TARGET LOST).
-          const v = controller.lastReportResult?.presence?.present ?? null;
+          // Verdict flip → compact inline status event (was a full-screen alert).
+          const r = controller.lastReportResult;
+          const v = r?.presence?.present ?? null;
           const prev = prevVerdictRef.current;
           prevVerdictRef.current = v;
           if (v !== null && prev !== null && v !== prev) {
-            setAlert(
+            setEvent(
               v
                 ? {
-                    title: "RECOGNIZED",
-                    jp: "認識完了",
-                    sub: "PATTERN GREEN · UNIT PRESENCE CONFIRMED",
-                    detail: `fused=${controller.lastReportResult?.presence?.fused.toFixed(3)} · ultrasonicServerValid=${controller.lastReportResult?.presence?.ultrasonicServerValid}`,
-                    tone: colors.green,
+                    text: `RECOGNIZED · fused=${(r?.presence?.fused ?? 0).toFixed(3)} · ultrasonicServerValid=${r?.presence?.ultrasonicServerValid}`,
+                    kind: "ok",
                   }
                 : {
-                    title: "TARGET LOST",
-                    jp: "標的喪失",
-                    sub: "PATTERN RED · UNIT PRESENCE NOT CONFIRMED",
-                    detail: `fused=${controller.lastReportResult?.presence?.fused.toFixed(3)}`,
-                    tone: colors.red,
+                    text: `TARGET LOST · fused=${(r?.presence?.fused ?? 0).toFixed(3)}`,
+                    kind: "bad",
                   },
             );
           }
+          setNow(Date.now());
         } catch (e) {
           console.warn("[receiver] tick failed:", e);
           const msg = e instanceof Error ? e.message : String(e);
@@ -235,13 +262,7 @@ export default function JushinScreen({
             console.log(`[receiver] session re-ensure after 404: ${ok}`);
           } else {
             setError(msg);
-            setAlert({
-              title: "SENSOR FAULT",
-              jp: "機器異常",
-              sub: "SYNC CYCLE INTERRUPTED — CHECK MAGI LINK",
-              detail: msg,
-              tone: colors.red,
-            });
+            setEvent({ text: `SENSOR FAULT · ${msg}`, kind: "bad" });
           }
         } finally {
           busyRef.current = false;
@@ -251,6 +272,7 @@ export default function JushinScreen({
       intervalRef.current = setInterval(loop, TICK_MS);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+      setEvent({ text: "ENGAGE FAILED", kind: "bad" });
     }
   };
 
@@ -286,331 +308,325 @@ export default function JushinScreen({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoEngage]);
 
-  const uptime = startedAt ? Math.round((Date.now() - startedAt) / 1000) : 0;
+  const uptime = startedAt ? Math.round((now - startedAt) / 1000) : 0;
   const sp = lastResult?.presence ?? null;
   const rtt = lastResult?.rttMs ?? null;
   const verdict = signalVerdict ?? sp?.present ?? null;
+  // Countdown: seconds since the last completed 5 s report tick.
+  const lastSeen = lastReport ? Math.max(0, Math.round((now - lastReport.timestamp) / 1000)) : null;
   // Connection stats to the transmitter, from this phone's last report. The
   // server's verdict overrules the client's ultrasonic validity when present.
   const link: LinkSummary | null = lastReport
     ? summarizeLink(lastReport, { ultrasonicValid: sp?.ultrasonicServerValid })
     : null;
-  const linkTone = !link
-    ? colors.dim
-    : link.state === "connected"
-      ? colors.green
-      : link.state === "degraded"
-        ? colors.amber
-        : colors.red;
+
+  const verdictBadge = () => {
+    if (!running) return <Badge variant="secondary"><Text>standby</Text></Badge>;
+    if (verdict == null) return <Badge variant="secondary"><Text>scanning</Text></Badge>;
+    return verdict
+      ? <Badge variant="default"><Text>present</Text></Badge>
+      : <Badge variant="destructive"><Text>absent</Text></Badge>;
+  };
 
   return (
-    <View style={styles.root}>
-      <BloomField a={colors.green} b={colors.cyan} />
-      <ConsoleHeader
-        jp="受信"
-        en="RECEIVER · JUSHIN"
-        stateLabel={running ? `LINK ACTIVE · ${fmtClock(uptime)}` : "STANDBY"}
-        stateTone={running ? colors.green : colors.dim}
-        right={
-          <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm }}>
-            <Text style={[text.tiny, { letterSpacing: 2 }]}>{VERSION}</Text>
-            <HudButton variant="ghost" small title="EXIT" onPress={onExit} />
-          </View>
-        }
-      />
-      <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.scroll}>
-        <View style={styles.cols}>
-          <View style={styles.colA}>
-            {/* 認識 plate — the big typographic interjection */}
-            <Interjection
-              text={verdict == null ? (running ? "SCANNING" : "STANDBY") : verdict ? "RECOGNIZED" : "ABSENT"}
-              sub={
-                verdict == null
-                  ? running ? "AWAITING SYNC" : "ENGAGE TO BEGIN"
-                  : sp
-                    ? sp.fused >= 0.5
-                      ? `AT-FIELD CONFIRMED · ${sp.fused.toFixed(2)}`
-                      : `AT-FIELD WEAK · ${sp.fused.toFixed(2)}`
-                    : `LOCAL RULE · ${signalVerdict ? "SIGNAL PRESENT" : "SIGNAL WEAK"}`
-              }
-              tone={verdict == null ? (running ? colors.amber : colors.dim) : verdict ? colors.green : colors.red}
-              plate={verdict == null ? false : true}
-            />
+    <SafeAreaView className="flex-1 bg-background" edges={["top", "left", "right", "bottom"]}>
+      {/* Header: exit chevron · title · role/uptime */}
+      <View className="flex-row items-center gap-2 px-4 pt-2">
+        <Button variant="ghost" size="icon" onPress={onExit} accessibilityLabel="Exit receiver">
+          <Chevron direction="left" />
+        </Button>
+        <Text className="flex-1 text-center text-lg font-semibold">Receiver · 受信</Text>
+        <View className="flex-row items-center gap-2">
+          <Text className="text-xs text-muted-foreground" style={{ fontFamily: MONO }}>
+            {running ? fmtClock(uptime) : "standby"}
+          </Text>
+        </View>
+      </View>
+      <ScrollView className="flex-1">
+        <View className="gap-4 p-4 pb-8">
+          {/* PRESENCE — verdict + honest "last seen" countdown */}
+          <Card>
+            <CardHeader>
+              <View className="flex-row items-center justify-between">
+                <CardTitle>Presence verdict</CardTitle>
+                {verdictBadge()}
+              </View>
+              <CardDescription>
+                {lastReport
+                  ? `last seen ${lastSeen}s ago · report #${ticks} · ${fmtTime(lastReport.timestamp)}`
+                  : running
+                    ? "waiting for the first report tick…"
+                    : "engage to begin reporting"}
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="gap-2">
+              {verdict != null && sp ? (
+                <>
+                  <DataRow label="fused (server)" value={`${sp.fused.toFixed(3)}`} />
+                  <DataRow
+                    label="server code check"
+                    value={
+                      sp.ultrasonicServerValid == null
+                        ? "—"
+                        : sp.ultrasonicServerValid
+                          ? "verified"
+                          : "invalid"
+                    }
+                  />
+                </>
+              ) : (
+                <DataRow label="source" value={running ? "local signal rule only" : "no data yet"} />
+              )}
+              {event && (
+                <View className="mt-1 flex-row items-center gap-2">
+                  <Badge variant={event.kind === "ok" ? "default" : event.kind === "warn" ? "secondary" : "destructive"}>
+                    <Text>{event.kind === "ok" ? "event" : "alert"}</Text>
+                  </Badge>
+                  <Text className="shrink text-xs text-muted-foreground" numberOfLines={2}>
+                    {event.text}
+                  </Text>
+                </View>
+              )}
+            </CardContent>
+          </Card>
 
-            {/* 電波 — live WiFi/BLE trace: walk the phone away, watch it fall */}
-            <Panel
-              title="SIGNAL TRACE / 電波"
-              tone={colors.cyan}
-              accentLabel={running ? "LIVE · 0.5s POLL" : "STANDBY"}
-              grid
-            >
+          {/* SIGNAL TRACE — live WiFi/BLE: walk the phone away, watch it fall */}
+          <Card>
+            <CardHeader>
+              <View className="flex-row items-center justify-between">
+                <CardTitle>Live signal trace</CardTitle>
+                <Badge variant={running ? "default" : "secondary"}>
+                  <Text>{running ? "live · 0.5s poll" : "standby"}</Text>
+                </Badge>
+              </View>
+              <CardDescription>BLE beacon + WiFi AP RSSI over time</CardDescription>
+            </CardHeader>
+            <CardContent>
               <LiveSignalGraph
                 sensorsRef={sensorsRef}
                 lastBleRef={lastBleRef}
                 serverUrl={serverUrl}
                 sessionId={settings.sessionId}
+                deviceId={deviceId}
                 resetKey={traceReset}
                 onSample={handleSignalSample}
               />
-            </Panel>
+            </CardContent>
+          </Card>
 
-            {/* AT-FIELD — device-side fused confidence */}
-            <Panel title="AT-FIELD / 絶対領域" tone={colors.purple} accentLabel="DEVICE FUSION" grid>
+          {/* FUSION — device-side confidence + per-channel observation */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Device fusion</CardTitle>
+              <CardDescription>local rule + per-channel confidence</CardDescription>
+            </CardHeader>
+            <CardContent className="gap-2">
               {local ? (
                 <>
-                  <Meter label="AT-FIELD STRENGTH" value={local.fused} height={12} />
-                  <ValueRow
-                    k="verdict"
-                    v={local.present ? "IN-SYNC" : "LOST"}
-                    tone={local.present ? colors.green : colors.red}
-                  />
-                  <ValueRow k="report #" v={String(ticks)} />
-                  <ValueRow k="uptime" v={fmtClock(uptime)} />
-                </>
-              ) : (
-                <Text style={[text.tiny, { color: colors.faint }]}>
-                  No telemetry yet — ENGAGE to begin sync.
-                </Text>
-              )}
-            </Panel>
-
-            {/* BIOMETRIC — the entry-plug occupant check */}
-            <Panel title="OCCUPANT / 搭乗者検証" tone={colors.amber} accentLabel="ANTI-SPOOF">
-              <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm }}>
-                <Lamp tone={bioOk == null ? colors.dim : bioOk ? colors.green : colors.red} size={7} />
-                <Text style={[text.value, { color: bioOk == null ? colors.dim : bioOk ? colors.green : colors.red }]}>
-                  {bio}
-                </Text>
-              </View>
-            </Panel>
-
-            {/* LINK — this phone's connection stats to the room transmitter */}
-            <Panel
-              title="LINK TO TRANSMITTER / 回線"
-              tone={linkTone}
-              accentLabel={link ? linkStateLabel(link.state) : "NO DATA"}
-              grid
-            >
-              {link ? (
-                <>
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm }}>
-                    <Lamp tone={linkTone} size={8} />
-                    <Text style={[text.value, { color: linkTone, fontSize: 13 }]}>
-                      {linkChips(link)} · LINK {linkStateLabel(link.state)} · {Math.round(link.quality * 100)}%
-                    </Text>
+                  <View className="gap-1">
+                    <DataRow label="fused (device)" value={local.fused.toFixed(3)} />
+                    <Progress value={local.fused * 100} />
                   </View>
-                  <Meter label="OVERALL LINK QUALITY" value={link.quality} height={10} />
-                  {link.modalities.map((m) => {
-                    const mTone = m.state === "connected" ? colors.green : m.state === "degraded" ? colors.amber : colors.red;
-                    return (
-                      <View key={m.modality} style={{ gap: 2 }}>
-                        <ValueRow
-                          k={modalityLabel(m.modality)}
-                          v={`${linkGlyph(m.state)} ${m.detail}`}
-                          tone={mTone}
-                          labelWidth={92}
-                        />
-                        <Meter label={`${modalityLabel(m.modality)} QUALITY`} value={m.quality} height={6} />
-                      </View>
-                    );
-                  })}
-                  <ValueRow
-                    k="uplink"
-                    v={rtt != null ? `server ${rtt}ms` : "—"}
-                    tone={rtt != null && rtt > 1500 ? colors.amber : colors.green}
-                    labelWidth={92}
-                  />
-                  <ValueRow k="join" v={joinSource} tone={colors.cyan} labelWidth={92} />
-                </>
-              ) : (
-                <Text style={[text.tiny, { color: colors.faint }]}>
-                  No link data yet — pick a preset and ENGAGE.
-                </Text>
-              )}
-            </Panel>
-
-            <View style={styles.controls}>
-              {!running ? (
-                <HudButton variant="primary" title="UNIT-01 ENGAGE" onPress={start} />
-              ) : (
-                <HudButton variant="danger" title="DISENGAGE" onPress={stop} />
-              )}
-              <HudButton variant="ghost" title="EXIT" onPress={onExit} />
-            </View>
-          </View>
-
-          <View style={styles.colB}>
-            {/* 信号 — the three sync rates, raw values + device-side confidence */}
-            <Panel
-              title="SYNC RATES / 信号"
-              tone={colors.purple}
-              accentLabel="PER-MODALITY"
-              right={<Lamp tone={running ? colors.green : colors.dim} size={6} />}
-            >
-              {!lastReport ? (
-                <Text style={[text.tiny, { color: colors.faint }]}>
-                  No observations yet. Pick a room preset, then ENGAGE — the
-                  transmitter's hotspot is discovered automatically.
-                </Text>
-              ) : (
-                <View style={styles.syncRow}>
-                  <View style={{ flex: 1, gap: spacing.sm }}>
-                    <Divider label="BLE" />
-                    <ValueRow k="nodes" v={`${lastReport.ble?.readings.length ?? 0} seen`} labelWidth={64} />
-                    {lastReport.ble?.readings.map((r) => (
-                      <ValueRow
-                        key={r.nodeId}
-                        k={`  ${r.nodeId}`}
-                        v={`${r.rssi} dBm${r.code ? " · code" : ""}`}
-                        tone={r.rssi > -70 ? colors.green : colors.amber}
-                        labelWidth={64}
-                      />
-                    ))}
-                    {local?.ble != null && <Meter label="SYNC RATE · BLE" value={local.ble} />}
-                  </View>
-                  <View style={{ flex: 1, gap: spacing.sm }}>
-                    <Divider label="WIFI" />
-                    <ValueRow
-                      k="conn"
-                      v={String(lastReport.wifi?.connectedToSoshin ?? "?")}
-                      tone={lastReport.wifi?.connectedToSoshin ? colors.green : colors.red}
-                      labelWidth={64}
-                    />
-                    <ValueRow k="ssid" v={lastReport.wifi?.ssid ?? "—"} labelWidth={64} />
-                    <ValueRow k="bssid" v={lastReport.wifi?.bssid ?? "—"} labelWidth={64} />
-                    <ValueRow
-                      k="rssi"
-                      v={lastReport.wifi?.soshinRssi != null && !Number.isNaN(lastReport.wifi.soshinRssi) ? `${lastReport.wifi.soshinRssi} dBm` : "—"}
-                      tone={lastReport.wifi?.soshinRssi != null && !Number.isNaN(lastReport.wifi.soshinRssi) ? (lastReport.wifi.soshinRssi > -65 ? colors.green : colors.amber) : colors.dim}
-                      labelWidth={64}
-                    />
-                    {local?.wifi != null && <Meter label="SYNC RATE · WIFI" value={local.wifi} />}
-                  </View>
-                  <View style={{ flex: 1, gap: spacing.sm }}>
-                    <Divider label="ULTRA" />
-                    <ValueRow
-                      k="rx"
-                      v={String(lastReport.ultrasonic?.received ?? "?")}
-                      tone={lastReport.ultrasonic?.received ? colors.green : colors.red}
-                      labelWidth={64}
-                    />
-                    <ValueRow
-                      k="sv"
-                      v={sp?.ultrasonicServerValid == null ? "—" : String(sp.ultrasonicServerValid)}
-                      tone={sp?.ultrasonicServerValid ? colors.green : colors.red}
-                      labelWidth={64}
-                    />
-                    <ValueRow
-                      k="snr"
-                      v={lastReport.ultrasonic?.snr != null ? String(lastReport.ultrasonic?.snr.toFixed(1)) : "—"}
-                      labelWidth={64}
-                    />
-                    <ValueRow
-                      k="miss"
-                      v={lastReport.ultrasonic?.missReason ?? "none"}
-                      tone={lastReport.ultrasonic?.missReason ? colors.amber : colors.dim}
-                      labelWidth={64}
-                    />
-                    {local?.ultrasonic != null && <Meter label="SYNC RATE · ULTRA" value={local.ultrasonic} />}
-                  </View>
-                </View>
-              )}
-            </Panel>
-
-            {/* MAGI — the server verdict */}
-            <Panel title="MAGI / 融合サーバ" tone={colors.cyan} accentLabel={`${ticks} REPORT(S)`}>
-              <View style={styles.syncRow}>
-                <View style={{ flex: 1, gap: spacing.sm }}>
-                  <ValueRow
-                    k="ingest"
-                    v={lastResult ? `sent · rtt ${rtt}ms` : "—"}
-                    tone={rtt != null && rtt > 1500 ? colors.amber : colors.green}
-                    labelWidth={72}
-                  />
-                  <ValueRow k="at" v={lastReport ? fmtTime(lastReport.timestamp) : "—"} labelWidth={72} />
-                  {!sp && (
-                    <Text style={[text.tiny, { color: colors.faint }]}>
-                      No server verdict yet — ENGAGE.
-                    </Text>
-                  )}
-                </View>
-                <View style={{ flex: 2, gap: spacing.sm }}>
-                  {sp && (
+                  {(
+                    [
+                      ["ble", local.ble, "BLE"],
+                      ["wifi", local.wifi, "WiFi"],
+                      ["ultrasonic", local.ultrasonic, "Ultrasonic"],
+                    ] as const
+                  ).map(([key, value, label]) => (
+                    <View key={key} className="gap-1">
+                      <DataRow label={label} value={value == null ? "—" : value.toFixed(3)} />
+                      {value != null && <Progress value={value * 100} />}
+                    </View>
+                  ))}
+                  {lastReport && (
                     <>
-                      <Meter label="FUSED (SERVER)" value={sp.fused} height={10} />
-                      {sp.confidences.ble != null && <Meter label="SYNC BLE" value={sp.confidences.ble} />}
-                      {sp.confidences.wifi != null && <Meter label="SYNC WIFI" value={sp.confidences.wifi} />}
-                      {sp.confidences.ultrasonic != null && (
-                        <Meter label="SYNC ULTRA" value={sp.confidences.ultrasonic} />
-                      )}
+                      <DataRow
+                        label="BLE nodes"
+                        value={lastReport.ble?.readings.map((r) => `${r.nodeId} ${r.rssi}dBm${r.code ? "·code" : ""}`).join(", ") || "none"}
+                      />
+                      <DataRow
+                        label="WiFi"
+                        value={
+                          lastReport.wifi?.connectedToSoshin
+                            ? `${lastReport.wifi.ssid ?? "?"}${
+                                lastReport.wifi.soshinRssi != null && !Number.isNaN(lastReport.wifi.soshinRssi)
+                                  ? ` ${lastReport.wifi.soshinRssi}dBm`
+                                  : ""
+                              }`
+                            : "not joined"
+                        }
+                      />
+                      <DataRow
+                        label="Ultrasonic"
+                        value={
+                          lastReport.ultrasonic?.received
+                            ? `snr ${lastReport.ultrasonic.snr?.toFixed(1) ?? "—"}`
+                            : (lastReport.ultrasonic?.missReason ?? "missed")
+                        }
+                      />
                     </>
                   )}
+                </>
+              ) : (
+                <Text className="text-sm text-muted-foreground">
+                  No telemetry yet — engage to begin the sync cycle.
+                </Text>
+              )}
+              {sp && (
+                <View className="mt-2 gap-2 border-t border-border pt-2">
+                  <JsonBlock data={sp} label="Server verdict (raw)" pretty />
+                  <JsonBlock data={lastReport} label="Report payload (raw)" pretty />
                 </View>
-              </View>
-              <RawJson data={sp} label="MAGI RESPONSE" />
-              <RawJson data={lastReport} label="REPORT PAYLOAD" />
-            </Panel>
+              )}
+            </CardContent>
+          </Card>
 
-            {/* 部屋監視 — every unit in the room; tap a row for its full verdict */}
-            <Panel
-              title="ROOM MONITOR / 部屋監視"
-              tone={colors.green}
-              accentLabel={`${devices.length} FOUND · ${devices.filter((d) => (d.link?.state ?? "lost") === "connected").length} LINKED`}
-              grid
-            >
+          {/* BIOMETRIC — the occupant check */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Biometric check</CardTitle>
+              <CardDescription>anti-spoof, recorded at attendance boundaries</CardDescription>
+            </CardHeader>
+            <CardContent className="flex-row items-center gap-2">
+              <Badge variant={bioOk == null ? "secondary" : bioOk ? "default" : "destructive"}>
+                <Text>{bioOk == null ? "pending" : bioOk ? "ok" : "failed"}</Text>
+              </Badge>
+              <Text className="shrink text-sm text-foreground" numberOfLines={2} style={{ fontFamily: MONO }}>
+                {bio}
+              </Text>
+            </CardContent>
+          </Card>
+
+          {/* LINK TO TRANSMITTER — this phone's connection to the room AP */}
+          <Card>
+            <CardHeader>
+              <View className="flex-row items-center justify-between">
+                <CardTitle>Link to transmitter</CardTitle>
+                <Badge
+                  variant={
+                    !link
+                      ? "secondary"
+                      : link.state === "connected"
+                        ? "default"
+                        : link.state === "degraded"
+                          ? "secondary"
+                          : "destructive"
+                  }
+                >
+                  <Text>{link ? link.state : "no data"}</Text>
+                </Badge>
+              </View>
+              <CardDescription>per-modality connection to the room transmitter</CardDescription>
+            </CardHeader>
+            <CardContent className="gap-2">
+              {link ? (
+                <>
+                  <View className="gap-1">
+                    <DataRow
+                      label="overall"
+                      value={`${Math.round(link.quality * 100)}%`}
+                    />
+                    <Progress value={link.quality * 100} />
+                  </View>
+                  {link.modalities.map((m) => (
+                    <DataRow
+                      key={m.modality}
+                      label={modalityLabel(m.modality)}
+                      value={`${m.detail} · ${Math.round(m.quality * 100)}%`}
+                    />
+                  ))}
+                  <DataRow label="uplink" value={rtt != null ? `server rtt ${rtt}ms` : "—"} />
+                  <DataRow label="joined" value={joinSource} />
+                </>
+              ) : (
+                <Text className="text-sm text-muted-foreground">
+                  No link data yet — pick a preset and engage; the transmitter's
+                  hotspot is discovered automatically.
+                </Text>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* ENGAGEMENT — start/stop attendance */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Engagement</CardTitle>
+              <CardDescription>
+                {running
+                  ? `reporting every ${TICK_MS / 1000}s · node clock pinned`
+                  : "start attendance to begin the report loop"}
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="flex-row gap-2">
+              {running ? (
+                <Button variant="destructive" className="flex-1" onPress={stop}>
+                  <Text>Stop attendance</Text>
+                </Button>
+              ) : (
+                <Button className="flex-1" onPress={start}>
+                  <Text>Start attendance</Text>
+                </Button>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* ROOM MONITOR — every unit on the server; tap a row for its verdict */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Room monitor</CardTitle>
+              <CardDescription>
+                {devices.length} device(s) on {settings.sessionId} ·{" "}
+                {devices.filter((d) => (d.link?.state ?? "lost") === "connected").length} fully linked
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="gap-2">
               {devices.length === 0 ? (
-                <Text style={[text.tiny, { color: colors.faint }]}>
+                <Text className="text-sm text-muted-foreground">
                   No devices reported yet. Start attendance; every phone on the
                   same preset room appears here with its three-channel link.
                 </Text>
               ) : (
-                devices.map((d: ServerPresence) => (
+                devices.map((d) => (
                   <DeviceLinkRow
                     key={d.deviceId}
                     device={d}
-                    now={Date.now()}
+                    now={now}
                     onPress={() =>
-                      setAlert({
-                        title: d.present ? "UNIT ACTIVE" : "UNIT INACTIVE",
-                        jp: "個機状態",
-                        sub: `${roleLabel(d.mode)} · ${d.deviceId}${d.deviceId === DEVICE_ID ? " (ME)" : ""}`,
-                        detail: JSON.stringify(d, null, 2),
-                        tone:
-                          d.link?.state === "connected"
-                            ? colors.green
-                            : d.link?.state === "degraded"
-                              ? colors.amber
-                              : colors.red,
-                      })
+                      setSelectedDevice((prev) => (prev?.deviceId === d.deviceId ? null : d))
                     }
                   />
                 ))
               )}
-            </Panel>
-          </View>
+              {selectedDevice && (
+                <View className="mt-1 gap-2 border-t border-border pt-2">
+                  <DataRow
+                    label="selected"
+                    value={`${selectedDevice.deviceId} · ${selectedDevice.present ? "present" : "absent"} · fused ${selectedDevice.fused.toFixed(3)}`}
+                  />
+                  <JsonBlock data={selectedDevice} label="Presence payload (raw)" pretty />
+                </View>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* ERROR — muted inline surface (was a full-screen fault alert) */}
+          {error && (
+            <Card className="border-destructive/50 bg-destructive/10">
+              <CardHeader>
+                <View className="flex-row items-center gap-2">
+                  <Badge variant="destructive">
+                    <Text>error</Text>
+                  </Badge>
+                  <CardTitle>Engagement interrupted</CardTitle>
+                </View>
+                <CardDescription>{error}</CardDescription>
+              </CardHeader>
+            </Card>
+          )}
         </View>
-
-        {error && (
-          <View style={styles.cols}>
-            <Panel title="FAULT / 異常" tone={colors.red} accentLabel="ERROR">
-              <Text style={[text.value, { color: colors.red }]}>{error}</Text>
-            </Panel>
-          </View>
-        )}
       </ScrollView>
-
-      {/* Full-screen NERV alert layer — verdict flips, faults, unit introspection */}
-      {alert && (
-        <AlertOverlay
-          title={alert.title}
-          jp={alert.jp}
-          sub={alert.sub}
-          detail={alert.detail}
-          tone={alert.tone}
-          onAck={() => setAlert(null)}
-        />
-      )}
-    </View>
+    </SafeAreaView>
   );
 }
 
@@ -640,13 +656,14 @@ function computeLocal(report: DeviceReport): LocalConfidence {
 
 /**
  * Owns the 0.5 s WiFi sampler (BLE comes from the 5 s presence tick) so only
- * this panel re-renders — the rest of the HUD stays at its own cadence.
+ * this panel re-renders — the rest of the console stays at its own cadence.
  */
 function LiveSignalGraph({
   sensorsRef,
   lastBleRef,
   serverUrl,
   sessionId,
+  deviceId,
   resetKey,
   onSample,
 }: {
@@ -654,6 +671,8 @@ function LiveSignalGraph({
   lastBleRef: React.MutableRefObject<number | null>;
   serverUrl: string;
   sessionId: string;
+  /** Resolved report identity — null only before the first engage completes. */
+  deviceId: string | null;
   resetKey: number;
   onSample?: (wifi: number | null) => void;
 }) {
@@ -676,8 +695,9 @@ function LiveSignalGraph({
         const ble = lastBleRef.current;
         setSamples((prev) => appendSample(prev, { t, ble, wifi }));
         onSampleRef.current?.(wifi);
+        if (deviceId == null) return;
         void postTelemetry(serverUrl, sessionId, {
-          deviceId: DEVICE_ID,
+          deviceId,
           t,
           ble,
           wifi,
@@ -689,7 +709,7 @@ function LiveSignalGraph({
       }
     }, 500);
     return () => clearInterval(id);
-  }, [resetKey, serverUrl, sessionId, sensorsRef, lastBleRef]);
+  }, [resetKey, serverUrl, sessionId, sensorsRef, lastBleRef, deviceId]);
 
   return <SignalGraph samples={samples} />;
 }
@@ -699,19 +719,3 @@ function fmtClock(s: number): string {
   const sec = (s % 60).toString().padStart(2, "0");
   return `${m}:${sec}`;
 }
-
-const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: colors.bg },
-  scroll: { padding: 0, gap: 0 },
-  cols: { flexDirection: "row", flexWrap: "wrap", gap: 0 },
-  colA: { flex: 3, gap: 0, minWidth: 300 },
-  colB: { flex: 4, gap: 0, minWidth: 300 },
-  syncRow: { flexDirection: "row", flexWrap: "wrap", gap: spacing.lg },
-  controls: {
-    flexDirection: "row",
-    gap: spacing.sm,
-    flexWrap: "wrap",
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.md,
-  },
-});

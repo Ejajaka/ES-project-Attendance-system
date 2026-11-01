@@ -8,7 +8,7 @@ import {
   SIGNAL_Y_MIN,
   type SignalSample,
   scaleY,
-  toSegments,
+  toDots,
   windowMs,
 } from "./signalGraph";
 
@@ -45,28 +45,36 @@ describe("scaleY", () => {
   });
 });
 
-describe("toSegments", () => {
-  test("connects consecutive readings", () => {
-    const segs = toSegments([s(0, -30, null), s(1, -100, null)], "ble", 100, 100);
-    expect(segs).toHaveLength(1);
-    const seg = segs[0];
-    expect(seg).toBeDefined();
-    if (!seg) return;
-    expect(seg.length).toBeCloseTo(Math.hypot(100, 100), 5);
-    expect(seg.x).toBeCloseTo(50, 5);
-    expect(seg.y).toBeCloseTo(50, 5);
-    expect(seg.angle).toBeCloseTo(Math.PI / 4, 5);
+describe("toDots", () => {
+  test("places one dot per reading at its plot coordinates", () => {
+    // Two samples spread across the width; -30 → top (y = 0), -100 → bottom.
+    const dots = toDots([s(0, -30, null), s(1, -100, null)], "ble", 100, 100);
+    expect(dots).toHaveLength(2);
+    const first = dots[0];
+    const last = dots[1];
+    expect(first).toBeDefined();
+    expect(last).toBeDefined();
+    if (!first || !last) return;
+    expect(first.at).toBe(0);
+    expect(first.x).toBeCloseTo(0, 5);
+    expect(first.y).toBeCloseTo(0, 5);
+    expect(last.at).toBe(1);
+    expect(last.x).toBeCloseTo(100, 5);
+    expect(last.y).toBeCloseTo(100, 5);
   });
 
-  test("breaks the line on a null reading", () => {
-    const segs = toSegments([s(0, -60, null), s(1, null, null), s(2, -60, null)], "ble", 100, 100);
-    expect(segs).toHaveLength(0);
+  test("leaves no dot on a null reading — the gap is visible", () => {
+    const dots = toDots([s(0, -60, null), s(1, null, null), s(2, -60, null)], "ble", 100, 100);
+    expect(dots).toHaveLength(2);
+    // The missing sample (index 1) is skipped entirely, never interpolated.
+    expect(dots.map((d) => d.at)).toEqual([0, 2]);
   });
 
-  test("ignores series with fewer than two points or no plot area", () => {
-    expect(toSegments([], "wifi", 100, 100)).toHaveLength(0);
-    expect(toSegments([s(0, -60, -60)], "wifi", 100, 100)).toHaveLength(0);
-    expect(toSegments([s(0, -60, -60), s(1, -70, -70)], "wifi", 0, 100)).toHaveLength(0);
+  test("renders a single reading with no plot area dropped", () => {
+    expect(toDots([], "wifi", 100, 100)).toHaveLength(0);
+    expect(toDots([s(0, -60, -60)], "wifi", 100, 100)).toHaveLength(1);
+    expect(toDots([s(0, -60, -60), s(1, -70, -70)], "wifi", 0, 100)).toHaveLength(0);
+    expect(toDots([s(0, -60, -60), s(1, -70, -70)], "wifi", 100, 0)).toHaveLength(0);
   });
 });
 

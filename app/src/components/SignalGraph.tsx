@@ -6,12 +6,12 @@ import {
   latest,
   SIGNAL_Y_MAX,
   SIGNAL_Y_MIN,
+  type SignalDot,
   type SignalKey,
   type SignalPoint,
   type SignalSample,
-  type SignalSegment,
   scaleY,
-  toSegments,
+  toDots,
   windowMs,
 } from "../lib/signalGraph";
 import { colors, MONO, spacing, text } from "../theme";
@@ -20,7 +20,9 @@ import { colors, MONO, spacing, text } from "../theme";
 const GUTTER = 38;
 /** Height of the bottom caption strip (px). */
 const AXIS = 12;
-const THICKNESS = 2;
+/** Dot size per sample (px). The newest reading gets a larger marker. */
+const DOT = 3;
+const ENDPOINT = 5;
 const TICKS = [-30, -50, -70, -90];
 
 const SERIES: Record<SignalKey, { label: string; tone: string }> = {
@@ -28,35 +30,33 @@ const SERIES: Record<SignalKey, { label: string; tone: string }> = {
   wifi: { label: "WIFI", tone: colors.green },
 };
 
-/** A 1-px rotated View draws one polyline segment — no chart dependency. */
-function SegmentLine({ seg, tone }: { seg: SignalSegment; tone: string }) {
+/** One sample = one square dot; a null reading draws nothing (honest gap). */
+function Dot({ dot, tone }: { dot: SignalDot; tone: string }) {
   return (
     <View
       pointerEvents="none"
       style={{
         position: "absolute",
-        left: seg.x - seg.length / 2,
-        top: seg.y - THICKNESS / 2,
-        width: seg.length,
-        height: THICKNESS,
+        left: dot.x - DOT / 2,
+        top: dot.y - DOT / 2,
+        width: DOT,
+        height: DOT,
         backgroundColor: tone,
-        transform: [{ rotate: `${seg.angle}rad` }],
       }}
     />
   );
 }
 
 function Endpoint({ point, tone }: { point: SignalPoint; tone: string }) {
-  const size = 5;
   return (
     <View
       pointerEvents="none"
       style={{
         position: "absolute",
-        left: point.x - size / 2,
-        top: point.y - size / 2,
-        width: size,
-        height: size,
+        left: point.x - ENDPOINT / 2,
+        top: point.y - ENDPOINT / 2,
+        width: ENDPOINT,
+        height: ENDPOINT,
         backgroundColor: tone,
       }}
     />
@@ -83,11 +83,11 @@ function fmtWindow(ms: number): string {
 
 /**
  * Live trace of the transmitter link: BLE beacon RSSI and WiFi AP RSSI over
- * time, one point per poll. Walk away from the room and the lines fall —
- * that is the distance curve the study needs.
+ * time, one dot per poll. Walk away from the room and the dots fall — that is
+ * the distance curve the study needs.
  *
- * Pure React Native: each segment is a rotated View, so no chart library and
- * no extra native module.
+ * Pure React Native: each dot is a plain View, so no chart library and no
+ * extra native module.
  */
 export function SignalGraph({
   samples,
@@ -177,8 +177,8 @@ export function SignalGraph({
                   pointerEvents="none"
                   style={{ position: "absolute", left: GUTTER, top: 0, width: plotW, height: plotH }}
                 >
-                  {toSegments(samples, key, plotW, plotH).map((seg) => (
-                    <SegmentLine key={`${key}-${seg.from}`} seg={seg} tone={tone} />
+                  {toDots(samples, key, plotW, plotH).map((dot) => (
+                    <Dot key={`${key}-${dot.at}`} dot={dot} tone={tone} />
                   ))}
                   {point && <Endpoint point={point} tone={tone} />}
                 </View>

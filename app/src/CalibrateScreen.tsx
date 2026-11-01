@@ -1,19 +1,25 @@
 import React, { useEffect, useRef, useState } from "react";
-import { ScrollView, StyleSheet, Text, View } from "react-native";
-import {
-  BloomField,
-  ConsoleHeader,
-  Divider,
-  HudButton,
-  Panel,
-} from "./components/hud";
-import { colors, spacing, text } from "./theme";
+import { ScrollView, View } from "react-native";
 import type { Settings } from "./settings";
 import { NativeSensors } from "./lib/nativeSensors";
 import { HttpReporter } from "./lib/reporter";
 import { JushinController } from "./lib/modes/jushin";
-import { ensureSession, fetchHotspot } from "./lib/server";
+import { ensureSession, fetchHotspot, postNodeConfig, postNodeTime } from "./lib/server";
 import { DEVICE_ID } from "./identity";
+import { MONO } from "./theme";
+import { ScreenHeader } from "./components/tx/ScreenHeader";
+import { ValueRow } from "./components/tx/ValueRow";
+import { StateBadge } from "./components/tx/StateBadge";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Progress } from "@/components/ui/progress";
+import { Text } from "@/components/ui/text";
 
 interface CalibrationData {
   sessionId: string;
@@ -135,6 +141,10 @@ export default function CalibrateScreen({
           roomId: settings.roomId,
           secret: settings.secret,
         });
+        // Fire-and-forget: point the room node's runtime config at this server
+        // and keep its clock pinned (the calibration loop refreshes it below).
+        void postNodeConfig(settings.serverUrl);
+        void postNodeTime();
         const announced = await fetchHotspot(settings.serverUrl, settings.sessionId);
         const ssid = announced?.ssid ?? settings.soshinSsid;
         const pass = announced?.passphrase ?? settings.soshinPass ?? undefined;
@@ -159,6 +169,8 @@ export default function CalibrateScreen({
           ticking.current = true;
           try {
             await controller.tick(Date.now());
+            // Keep the room node's clock pinned once per calibration tick.
+            void postNodeTime();
           } catch {
             // keep sampling; the server values show the truth
           } finally {
@@ -223,116 +235,225 @@ export default function CalibrateScreen({
   const ageStr =
     lastSync == null ? "never" : `${Math.max(0, Math.round((Date.now() - lastSync) / 1000))}s ago`;
 
+  /** Sample-count progress toward "enough" (server asks ≥3 per side). */
+  const sampleProgress = (n: number) =>
+    Math.round(Math.min(1, Math.max(0, n / 3)) * 100);
+
+  const mine = data?.latest.find((l) => l.deviceId === calibratorId) ?? null;
+
   return (
-    <View style={styles.root}>
-      <BloomField a={colors.cyan} b={colors.amber} />
-      <ConsoleHeader
-        jp="校正"
-        en="CALIBRATE · ROOM BOUNDARY"
-        stateLabel={online ? `LIVE · ${ageStr}` : "OFFLINE"}
-        stateTone={online ? colors.cyan : colors.red}
-        right={<HudButton variant="ghost" small title="EXIT" onPress={onExit} />}
+    <View className="flex-1 bg-background">
+      <ScreenHeader
+        title="Calibrate · 校正"
+        onExit={onExit}
+        right={
+          <StateBadge mono tone={online ? "ok" : "bad"}>
+            {online ? `LIVE · ${ageStr}` : "OFFLINE"}
+          </StateBadge>
+        }
       />
-      <ScrollView contentContainerStyle={styles.body}>
+      <ScrollView className="flex-1" contentContainerClassName="p-4 gap-4">
         {message && (
-          <Text style={[text.tiny, { color: online ? colors.amber : colors.red, letterSpacing: 1 }]}>
+          <Text
+            className={
+              online
+                ? "text-xs text-amber-400"
+                : "text-xs text-red-400"
+            }
+            numberOfLines={2}
+          >
             {message}
           </Text>
         )}
 
-        <Panel title="CURRENT BOUNDARY" tone={colors.cyan}>
-          <Text style={[text.tiny, { color: colors.dim }]}>
-            ROOM NODE  {data?.current.roomNodeId ?? "(not announced)"}
-          </Text>
-          <Text style={[text.tiny, { color: colors.dim }]}>
-            BLE ≥ {data?.current.bleRssiThreshold ?? "—"} dBm · WiFi ≥{" "}
-            {data?.current.wifiRssiThreshold ?? "—"} dBm
-          </Text>
-          <Text style={[text.tiny, { color: colors.faint }]}>
-            TTL {Math.round((data?.current.ttlMs ?? 0) / 1000)}s · enter{" "}
-            {Math.round((data?.current.enterMs ?? 0) / 1000)}s · exit{" "}
-            {Math.round((data?.current.exitMs ?? 0) / 1000)}s
-          </Text>
-        </Panel>
+        {/* Calibration dataset card */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Current boundary</CardTitle>
+            <CardDescription numberOfLines={2}>
+              live thresholds this room enforces
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="gap-2">
+            <ValueRow
+              label="room node"
+              value={data?.current.roomNodeId ?? "(not announced)"}
+            />
+            <ValueRow
+              label="BLE ≥"
+              value={data ? `${data.current.bleRssiThreshold} dBm` : "—"}
+            />
+            <ValueRow
+              label="WiFi ≥"
+              value={data ? `${data.current.wifiRssiThreshold} dBm` : "—"}
+            />
+            <ValueRow
+              label="timers"
+              value={`TTL ${Math.round((data?.current.ttlMs ?? 0) / 1000)}s · enter ${Math.round((data?.current.enterMs ?? 0) / 1000)}s · exit ${Math.round((data?.current.exitMs ?? 0) / 1000)}s`}
+              tone="muted"
+            />
+          </CardContent>
+        </Card>
 
-        <Panel title="THIS PHONE" tone={colors.green}>
-          {data?.latest.find((l) => l.deviceId === calibratorId) ? (
-            (() => {
-              const l = data.latest.find((x) => x.deviceId === calibratorId)!;
-              return (
-                <Text style={[text.tiny, { color: colors.text }]}>
-                  BLE {fmtRssi(l.ble)} · WiFi {fmtRssi(l.wifi)} ·{" "}
-                  <Text style={{ color: l.inRoom ? colors.green : colors.red }}>
-                    {l.inRoom ? "IN ROOM" : "OUTSIDE"}
-                  </Text>
+        {/* Live sample card — this phone, right now */}
+        <Card>
+          <CardHeader>
+            <View className="flex-row items-center justify-between gap-2">
+              <CardTitle>Live sample</CardTitle>
+              {mine ? (
+                <StateBadge mono tone={mine.inRoom ? "ok" : "warn"}>
+                  {mine.inRoom ? "IN ROOM" : "OUTSIDE"}
+                </StateBadge>
+              ) : (
+                <StateBadge mono tone="muted">
+                  NO REPORT
+                </StateBadge>
+              )}
+            </View>
+            <CardDescription numberOfLines={2}>
+              {`calibrating as ${calibratorId}`}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="gap-2">
+            {mine ? (
+              <>
+                <ValueRow label="BLE" value={fmtRssi(mine.ble)} />
+                <ValueRow label="WiFi" value={fmtRssi(mine.wifi)} />
+              </>
+            ) : (
+              <Text className="text-xs leading-5 text-muted-foreground">
+                no report yet — turn on Bluetooth, join Shusseki-ESP32, wait ~5s
+              </Text>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Inside/Outside sample capture */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Mark a position</CardTitle>
+            <CardDescription>
+              Stand INSIDE the room (centre + near each wall) and tap MARK
+              INSIDE 2–3 times. Then step into the CORRIDOR and tap MARK
+              OUTSIDE.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="gap-3">
+            <View className="flex-row items-center gap-2">
+              <Button
+                className="flex-1"
+                disabled={busy}
+                onPress={() => mark("inside")}
+              >
+                <Text>MARK INSIDE</Text>
+              </Button>
+              <Button
+                className="flex-1"
+                variant="destructive"
+                disabled={busy}
+                onPress={() => mark("outside")}
+              >
+                <Text>MARK OUTSIDE</Text>
+              </Button>
+            </View>
+          </CardContent>
+        </Card>
+
+        {/* Suggestion — what the server would apply */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Suggestion</CardTitle>
+            <CardDescription>
+              {data?.suggestion.sufficient
+                ? "enough samples — APPLY"
+                : "collect ≥3 INSIDE and ≥3 OUTSIDE samples"}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="gap-3">
+            <View className="gap-1">
+              <View className="flex-row items-center justify-between gap-2">
+                <Text className="text-xs text-muted-foreground">inside samples</Text>
+                <Text
+                  className="text-xs text-foreground"
+                  style={{ fontFamily: MONO }}
+                  numberOfLines={1}
+                >
+                  {data?.suggestion.insideSamples ?? 0}
                 </Text>
-              );
-            })()
-          ) : (
-            <Text style={[text.tiny, { color: colors.faint }]}>
-              no report yet — turn on Bluetooth, join Shusseki-ESP32, wait ~5s
-            </Text>
-          )}
-        </Panel>
+              </View>
+              <Progress
+                value={sampleProgress(data?.suggestion.insideSamples ?? 0)}
+                className="h-2 bg-emerald-950/60"
+                indicatorClassName="bg-emerald-600"
+              />
+            </View>
+            <View className="gap-1">
+              <View className="flex-row items-center justify-between gap-2">
+                <Text className="text-xs text-muted-foreground">outside samples</Text>
+                <Text
+                  className="text-xs text-foreground"
+                  style={{ fontFamily: MONO }}
+                  numberOfLines={1}
+                >
+                  {data?.suggestion.outsideSamples ?? 0}
+                </Text>
+              </View>
+              <Progress
+                value={sampleProgress(data?.suggestion.outsideSamples ?? 0)}
+                className="h-2 bg-red-950/60"
+                indicatorClassName="bg-red-600"
+              />
+            </View>
+            <ValueRow
+              label="suggested BLE ≥"
+              value={
+                data?.suggestion.bleRssiThreshold != null
+                  ? `${data.suggestion.bleRssiThreshold} dBm${data.suggestion.bleOverlap ? " (OVERLAP)" : ""}`
+                  : "—"
+              }
+              tone={data?.suggestion.bleOverlap ? "warn" : "default"}
+            />
+            <ValueRow
+              label="suggested WiFi ≥"
+              value={
+                data?.suggestion.wifiRssiThreshold != null
+                  ? `${data.suggestion.wifiRssiThreshold} dBm${data.suggestion.wifiOverlap ? " (OVERLAP)" : ""}`
+                  : "—"
+              }
+              tone={data?.suggestion.wifiOverlap ? "warn" : "default"}
+            />
+            <View className="flex-row items-center gap-2">
+              <Button
+                className="flex-1"
+                disabled={busy}
+                onPress={() => void post("/calibrate/apply", {}, "thresholds applied")}
+              >
+                <Text>APPLY SUGGESTED</Text>
+              </Button>
+              <Button
+                className="flex-1"
+                variant="outline"
+                disabled={busy}
+                onPress={() => void post("/calibrate/reset", {}, "samples cleared")}
+              >
+                <Text>CLEAR SAMPLES</Text>
+              </Button>
+            </View>
+          </CardContent>
+        </Card>
 
-        <Panel title="MARK A POSITION" tone={colors.amber}>
-          <Text style={[text.tiny, { color: colors.faint, lineHeight: 15 }]}>
-            Stand INSIDE the room (centre + near each wall) and tap MARK INSIDE 2–3
-            times. Then step into the CORRIDOR and tap MARK OUTSIDE.
-          </Text>
-          <View style={styles.row}>
-            <HudButton title="MARK INSIDE" disabled={busy} onPress={() => mark("inside")} />
-            <HudButton
-              variant="danger"
-              title="MARK OUTSIDE"
-              disabled={busy}
-              onPress={() => mark("outside")}
-            />
-          </View>
-          <Divider label="SUGGESTION" />
-          <Text style={[text.tiny, { color: colors.text }]}>
-            inside {data?.suggestion.insideSamples ?? 0} · outside{" "}
-            {data?.suggestion.outsideSamples ?? 0}
-          </Text>
-          <Text style={[text.tiny, { color: colors.text }]}>
-            BLE ≥ {data?.suggestion.bleRssiThreshold ?? "—"} dBm
-            {data?.suggestion.bleOverlap ? "  (OVERLAP)" : ""}
-          </Text>
-          <Text style={[text.tiny, { color: colors.text }]}>
-            WiFi ≥ {data?.suggestion.wifiRssiThreshold ?? "—"} dBm
-            {data?.suggestion.wifiOverlap ? "  (OVERLAP)" : ""}
-          </Text>
-          <Text style={[text.tiny, { color: colors.faint }]}>
-            {data?.suggestion.sufficient
-              ? "enough samples — APPLY"
-              : "collect ≥3 INSIDE and ≥3 OUTSIDE samples"}
-          </Text>
-          <View style={styles.row}>
-            <HudButton
-              title="APPLY SUGGESTED"
-              disabled={busy}
-              onPress={() => void post("/calibrate/apply", {}, "thresholds applied")}
-            />
-            <HudButton
-              variant="ghost"
-              title="CLEAR SAMPLES"
-              disabled={busy}
-              onPress={() => void post("/calibrate/reset", {}, "samples cleared")}
-            />
-          </View>
-        </Panel>
-
-        <Panel title="SAMPLES" tone={colors.purple}>
-          <Text style={[text.tiny, { color: colors.green }]}>INSIDE  {lastVals(ins)}</Text>
-          <Text style={[text.tiny, { color: colors.red }]}>OUTSIDE {lastVals(outs)}</Text>
-        </Panel>
+        {/* Recent raw samples */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Samples</CardTitle>
+            <CardDescription>last 8 captures per side (B…/W… dBm)</CardDescription>
+          </CardHeader>
+          <CardContent className="gap-2">
+            <ValueRow label="INSIDE" value={lastVals(ins)} tone="ok" />
+            <ValueRow label="OUTSIDE" value={lastVals(outs)} tone="bad" />
+          </CardContent>
+        </Card>
       </ScrollView>
     </View>
   );
 }
-
-const styles = StyleSheet.create({
-  root: { flex: 1 },
-  body: { padding: spacing.md, gap: spacing.md },
-  row: { flexDirection: "row", gap: spacing.sm, flexWrap: "wrap" },
-});
