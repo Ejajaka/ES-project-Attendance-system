@@ -25,6 +25,14 @@ export interface Settings {
  */
 export const ATLAS_SSID = "atlas";
 
+/**
+ * The room node's own softAP address. Every room rides the fixed open `atlas`
+ * network whose gateway is the ESP32 node itself (192.168.4.1). Receivers push
+ * the wall clock there: the node has no NTP uplink and its rolling code is
+ * only verifiable once its unix time matches the server's.
+ */
+export const ATLAS_NODE_URL = "http://192.168.4.1";
+
 export const SERVER_URL =
   (process.env.EXPO_PUBLIC_SERVER_URL as string | undefined) ??
   "http://10.0.2.2:8787";

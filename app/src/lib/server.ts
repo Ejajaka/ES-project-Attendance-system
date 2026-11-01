@@ -5,6 +5,7 @@
  */
 
 import { encodeBase64Utf8, type LinkSummary } from "shared";
+import { ATLAS_NODE_URL } from "../settings";
 
 export interface ServerConfidences {
   ble?: number;
@@ -119,6 +120,74 @@ export async function ensureSession(
     return false;
   }
 }
+
+/**
+ * Pin the ESP32 room node's wall clock: `POST /api/node/time?unix=<seconds>`.
+ * The node has no NTP uplink, so its rolling code is only verifiable by the
+ * server once its unix time matches. Best-effort: any failure (node asleep,
+ * phone not on `atlas` yet) degrades to `false`, never throws.
+ */
+export async function postNodeTime(nodeUrl = ATLAS_NODE_URL): Promise<boolean> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 1500);
+  try {
+    const res = await fetch(`${nodeUrl}/api/node/time?unix=${Math.floor(Date.now() / 1000)}`, {
+      method: "POST",
+      signal: ctrl.signal,
+    });
+    return res.ok || res.status === 204;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Push this receiver's server URL onto the node: `POST /api/node/config`. */
+export async function postNodeConfig(
+  serverUrl: string,
+  nodeUrl = ATLAS_NODE_URL,
+): Promise<boolean> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 1500);
+  try {
+    const res = await fetch(
+      `${nodeUrl}/api/node/config?serverUrl=${encodeURIComponent(serverUrl)}`,
+      { method: "POST", signal: ctrl.signal },
+    );
+    return res.ok || res.status === 204;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** `GET /api/node` — the node's self state (null when unreachable/malformed). */
+export async function getSelfNode(nodeUrl = ATLAS_NODE_URL): Promise<{
+  nodeId?: string;
+  unix?: number;
+  serverUrl?: string;
+  ssid?: string;
+} | null> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 1500);
+  try {
+    const res = await fetch(`${nodeUrl}/api/node`, { signal: ctrl.signal });
+    if (!res.ok) return null;
+    return (await res.json()) as {
+      nodeId?: string;
+      unix?: number;
+      serverUrl?: string;
+      ssid?: string;
+    };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
  * Best-effort 0.5 s graph sample (BLE/WiFi only). The presence report loop is
  * unaffected if this fails; the dashboard simply shows a gap.

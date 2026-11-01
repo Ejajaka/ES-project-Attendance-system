@@ -35,6 +35,8 @@ class ShussekiWifiModule : Module() {
   // Tracks whether a specifier-requested network is currently usable, so
   // getObservation can report an honest connectedToSoshin.
   private var specifierAvailable = false
+  /** The specifier-granted network; used to pin app traffic into the room AP. */
+  private var specifierNetwork: Network? = null
   private var requestedSsid: String? = null
   private var scannedBssid: String? = null
   private val connectivity: ConnectivityManager
@@ -93,9 +95,31 @@ class ShussekiWifiModule : Module() {
     }
   }
 
+  /**
+   * A WifiNetworkSpecifier request is one-shot: if the AP is unreachable during
+   * the attempt (node rebooted, out of earshot for a moment) every later tick
+   * still deserves a join attempt. Keep re-requesting while the SSID is wanted
+   * and the specifier network has not come up.
+   */
+  private val joinRetryHandler = Handler(Looper.getMainLooper())
+  private var joinRetryRunnable: Runnable? = null
+  private var specifierCallback: ConnectivityManager.NetworkCallback? = null
+
   private fun connectToSoshin(ssid: String, passphrase: String?): Boolean {
     requestedSsid = ssid
     specifierAvailable = false
+    // Re-engaging while a previous room network is still bound: release the
+    // bind first, or a failed follow-up request leaves the process pinned to a
+    // network the system has torn down.
+    if (specifierNetwork != null) {
+      specifierNetwork = null
+      try {
+        connectivity.bindProcessToNetwork(null)
+      } catch (_: SecurityException) {
+      }
+    }
+    joinRetryRunnable?.let { joinRetryHandler.removeCallbacks(it) }
+    specifierCallback?.let { runCatching { connectivity.unregisterNetworkCallback(it) } }
 
     val specifierBuilder = WifiNetworkSpecifier.Builder().setSsid(ssid)
     if (!passphrase.isNullOrEmpty()) {
@@ -109,17 +133,53 @@ class ShussekiWifiModule : Module() {
       .setNetworkSpecifier(specifierBuilder.build())
       .build()
 
-    // NOTE: we deliberately do NOT bindProcessToNetwork — reports must still
-    // reach the fusion server over the internet/LAN, not only the local link.
-    connectivity.requestNetwork(request, object : ConnectivityManager.NetworkCallback() {
+    // Binding IS deliberate: a plain OkHttp `fetch` otherwise goes out the
+    // default network (the station's home LAN/router), which has no route into
+    // the room node's softAP — so /api/node/time (the node's clock sync) always
+    // fails on a device that also has another WiFi. Loopback (adb reverse ->
+    // the fusion server) is unaffected by a process-to-network bind.
+    val callback = object : ConnectivityManager.NetworkCallback() {
       override fun onAvailable(network: Network) {
         specifierAvailable = true
+        specifierNetwork = network
+        // The network is up: stop hammering the specifier.
+        joinRetryRunnable?.let { joinRetryHandler.removeCallbacks(it) }
+        try {
+          connectivity.bindProcessToNetwork(network)
+        } catch (_: SecurityException) {
+          // Device in a restricted profile: stay on the default network.
+        }
       }
 
       override fun onLost(network: Network) {
         specifierAvailable = false
+        // Release the bind only if we are still on the network we lost, so a
+        // newer requested room network keeps its binding.
+        if (specifierNetwork == network) {
+          specifierNetwork = null
+          try {
+            connectivity.bindProcessToNetwork(null)
+          } catch (_: SecurityException) {
+          }
+        }
       }
-    })
+    }
+    specifierCallback = callback
+    connectivity.requestNetwork(request, callback)
+
+    val retry = object : Runnable {
+      override fun run() {
+        if (specifierAvailable || requestedSsid != ssid) return
+        try {
+          connectivity.requestNetwork(request, callback)
+        } catch (_: IllegalArgumentException) {
+          // Already registered: the pending request covers the next attempt.
+        }
+        joinRetryHandler.postDelayed(this, 15_000)
+      }
+    }
+    joinRetryRunnable = retry
+    joinRetryHandler.postDelayed(retry, 15_000)
     return true
   }
 

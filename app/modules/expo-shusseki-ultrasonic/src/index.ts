@@ -8,7 +8,7 @@ export interface NativeUltrasonicObservation {
   snr: number | null;
   /** Why a signal was missed: service killed vs no signal vs decode failure. */
   missReason: "none" | "service_killed" | "no_signal" | "decode_failed" | null;
-  /** Matched-filter score (0..~1) — how strongly the chirp trajectory was present. */
+  /** Matched-filter score (0..~1) — mean on-fraction across both stamp tones. */
   ratio?: number;
   /** Total energy in the observed band over the window — mic-health signal. */
   energy?: number;

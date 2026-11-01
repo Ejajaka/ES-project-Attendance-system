@@ -16,11 +16,16 @@ import expo.modules.kotlin.modules.ModuleDefinition
  * Ultrasonic PRESENCE stamp — but engineered for the hardware we actually have.
  *
  * Chassis (8-14kHz chirp) proved too weak on real phone speakers/mics at
- * useful volume, so the stamp is a FIXED, clearly-audible TONE BURST around
- * 1.8kHz — in every phone's efficient passband. Presence is decided by a
- * gain-invariant test: energy at the tone frequency vs a neighbour (off-freq)
- * reference, summed and required to repeat the on-off burst cadence. Repeating
- * the burst defeats mic AGC and room echoes far better than any single-tone.
+ * useful volume, so the stamp is FIXED, clearly-audible TONE BURSTS in the
+ * ~1.8-2.6kHz band — in every phone's efficient passband, ALTERNATING between
+ * two frequencies (A=1800 Hz, B=2600 Hz) every burst. Presence is decided by a
+ * gain-invariant test: each tone frequency vs its own neighbour (off-freq)
+ * reference, required to dominate for a fraction of the listen window.
+ * Alternating defeats any stationary narrowband noise source: a jammer parked
+ * on ONE frequency can satisfy only half of the pattern (2 of the 4 bursts),
+ * and the detector demands BOTH tones — so a single-tone speaker hum or a
+ * pitched app/plant can never forge presence. Repeating the burst cadence
+ * on top of that defeats mic AGC and room echoes.
  *
  * This is a DETECTION-ONLY link: no code is carried; identity + rolling code
  * travel over BLE (reliable). Room-boundedness is the research property being
@@ -76,26 +81,28 @@ class ShussekiUltrasonicModule : Module() {
     return result
   }
 
-  // --- encode: fixed-tone burst stamp --------------------------------
+  // --- encode: alternating two-tone burst stamp ----------------------
 
-  private val stampFreq = 1800.0
-  private val refFreq = 2300.0 // off-frequency neighbour used as the noise reference
+  /** Stamp tones alternate every burst: A, B, A, B. */
+  private val stampFreqA = 1800.0
+  private val stampFreqB = 2600.0
   private val burstMs = 120L
   private val bursts = 4
   private val burstGapMs = 220L
   private val amplitude = 0.97
 
   private fun transmitStamp() {
+    val burstFreqs = doubleArrayOf(stampFreqA, stampFreqB, stampFreqA, stampFreqB)
     val burstN = (sampleRate * burstMs / 1000.0).toInt()
     val gapN = (sampleRate * burstGapMs / 1000.0).toInt()
     val rampN = (sampleRate * 3 / 1000).toInt() // ~3ms soft edges
     val total = bursts * burstN + (bursts - 1) * gapN
     val pcm = ShortArray(total)
     var idx = 0
-    var phase = 0.0
-    val phaseInc = 2.0 * Math.PI * stampFreq / sampleRate
     for (b in 0 until bursts) {
       // burst: continuous-phase tone, soft 3ms ramp at burst edges
+      val phaseInc = 2.0 * Math.PI * burstFreqs[b % burstFreqs.size] / sampleRate
+      var phase = 0.0
       for (j in 0 until burstN) {
         val edge = minOf(j, burstN - 1 - j, rampN - 1)
         val env = if (edge > 0) edge.toDouble() / rampN else 0.0
@@ -127,9 +134,23 @@ class ShussekiUltrasonicModule : Module() {
   // --- matched detection ---------------------------------------------
 
   private val frameMs = 20L
-  /** A sustained tone must cover at least this fraction of the listen window. */
-  private val minOnFraction = 0.20
-  private val minPeakTone = 1e7
+  /** Per-tone off-frequency neighbours used as the noise reference. */
+  private val refFreqA = 2300.0
+  private val refFreqB = 3200.0
+  /** Each tone must dominate its neighbour for at least this window fraction. */
+  private val minOnFraction = 0.12
+  /** A frame counts as "on tone" when the tone is this much above its neighbour. */
+  private val onToneRatio = 3.0
+  /**
+   * ANTI-SILENCE GUARD ONLY — deliberately NOT a power gate.
+   * Peak magnitude below this means the mic path is unreadable (digital
+   * blank/flatline, muted mic, or a recording playing on top of quantisation
+   * noise), where the tone-vs-neighbour RATIO could pass spuriously. It is
+   * sized ~7x BELOW the weakest real stamp measured on the bench (6.6e5 at the
+   * worst mic placement), so any real amp+speaker at a plausible hearing
+   * distance passes comfortably; only a dead path fails it.
+   */
+  private val minPeakTone = 1e5
 
   private fun detectPresence(timeoutMs: Long): Map<String, Any?> {
     val minBuf = AudioRecord.getMinBufferSize(
@@ -161,33 +182,44 @@ class ShussekiUltrasonicModule : Module() {
     val frame = (sampleRate * frameMs / 1000).toInt()
     val frames = n / frame
 
-    // Per-frame tone vs neighbour-reference ratio; a real burst makes the tone
-    // freq dominate its neighbour. Gain-invariant (AGC cancels in the ratio).
-    val toneMag = DoubleArray(frames)
-    val refMag = DoubleArray(frames)
+    // Per-frame tone vs neighbour-reference ratio for BOTH stamp frequencies.
+    // Gain-invariant (AGC cancels in the ratio): no absolute power gate sits in
+    // the decision — a real stamp at any distance and volume is judged on the
+    // same terms as a loud one.
+    val magA = DoubleArray(frames)
+    val refMagA = DoubleArray(frames)
+    val magB = DoubleArray(frames)
+    val refMagB = DoubleArray(frames)
     var grandTotal = 0.0
     for (f in 0 until frames) {
-      toneMag[f] = goertzel(buf, f * frame, frame, stampFreq)
-      refMag[f] = goertzel(buf, f * frame, frame, refFreq)
-      grandTotal += toneMag[f] + refMag[f]
+      magA[f] = goertzel(buf, f * frame, frame, stampFreqA)
+      refMagA[f] = goertzel(buf, f * frame, frame, refFreqA)
+      magB[f] = goertzel(buf, f * frame, frame, stampFreqB)
+      refMagB[f] = goertzel(buf, f * frame, frame, refFreqB)
+      grandTotal += magA[f] + refMagA[f] + magB[f] + refMagB[f]
     }
 
-    // Count frames that are clearly "on tone". The transmitter repeats its
-    // stamp and mic AGC makes the on/off runs flicker, so do NOT require an
-    // exact burst/run count (that rejected a clearly-audible link). Presence
-    // is: the tone dominates its neighbour for a meaningful part of the window.
+    // Per-frequency on-fraction: how much of the window had each tone clearly
+    // dominating its own neighbour band (>= 3x). A bursts cover ~29% of a
+    // pattern cycle (2 of 4 bursts) and mic AGC + room echo make runs flicker,
+    // so no exact run/burst count is required — dominance over a fraction of
+    // the window is enough. Requiring BOTH tones halves any single-tone
+    // spurious source's chance and kills every stationary narrowband jammer.
     val burstFrames = (burstMs / frameMs).toInt()
-    val onToneRatio = 3.0
-    var onFrames = 0
+    var onFramesA = 0
+    var onFramesB = 0
     var runs = 0
     var inRun = false
     var longestRun = 0
     var currentRun = 0
-    var peakTone = 0.0
+    var peakToneA = 0.0
+    var peakToneB = 0.0
     for (f in 0 until frames) {
-      val on = refMag[f] > 0 && toneMag[f] > onToneRatio * refMag[f]
-      if (on) {
-        onFrames++
+      val onA = refMagA[f] > 0 && magA[f] > onToneRatio * refMagA[f]
+      val onB = refMagB[f] > 0 && magB[f] > onToneRatio * refMagB[f]
+      if (onA) onFramesA++
+      if (onB) onFramesB++
+      if (onA || onB) {
         if (!inRun) { runs++; inRun = true; currentRun = 0 }
         currentRun++
         if (currentRun > longestRun) longestRun = currentRun
@@ -195,14 +227,17 @@ class ShussekiUltrasonicModule : Module() {
         inRun = false
         currentRun = 0
       }
-      if (toneMag[f] > peakTone) peakTone = toneMag[f]
+      if (magA[f] > peakToneA) peakToneA = magA[f]
+      if (magB[f] > peakToneB) peakToneB = magB[f]
     }
 
-    // Gain-invariant and tolerant of repeats/flicker: a real stamp holds the
-    // tone for ~40% of a burst cycle, far above ambient noise.
-    val onFraction = if (frames > 0) onFrames.toDouble() / frames else 0.0
-    val present = onFraction >= minOnFraction && peakTone > minPeakTone
-    val score = onFraction
+    // Decision: BOTH tone frequencies must each dominate their neighbour band
+    // for a meaningful part of the window, plus the tiny anti-silence floor.
+    val fracA = if (frames > 0) onFramesA.toDouble() / frames else 0.0
+    val fracB = if (frames > 0) onFramesB.toDouble() / frames else 0.0
+    val score = (fracA + fracB) / 2.0
+    val present = fracA >= minOnFraction && fracB >= minOnFraction &&
+      peakToneA > minPeakTone && peakToneB > minPeakTone
 
     val miss = when {
       present -> "none"
@@ -211,13 +246,15 @@ class ShussekiUltrasonicModule : Module() {
     }
     android.util.Log.i(
       "ShussekiUltrasonic",
-      "TONE onFrames=$onFrames frac=${String.format("%.2f", onFraction)} runs=$runs longest=$longestRun expected=${bursts * burstFrames} peakTone=${String.format("%.0f", peakTone)} present=$present",
+      "TONE fracA=${String.format("%.2f", fracA)} peakA=${String.format("%.0f", peakToneA)} " +
+        "fracB=${String.format("%.2f", fracB)} peakB=${String.format("%.0f", peakToneB)} " +
+        "runs=$runs longest=$longestRun expected=${bursts * burstFrames} present=$present",
     )
     return mapOf(
       "received" to present,
       "valid" to (if (present) true else null),
       "code" to null,
-      "snr" to (if (present) score * 100.0 else score * 100.0),
+      "snr" to score * 100.0,
       "missReason" to miss,
       "ratio" to score,
       "energy" to grandTotal,

@@ -2,6 +2,7 @@ import type { DeviceReport, BiometricCheck } from "shared";
 import type { DeviceSensors } from "../sensors";
 import type { Reporter, ReportResult } from "../reporter";
 import { RssiSmoother } from "../rssiSmoother";
+import { postNodeTime } from "../server";
 
 /**
  * Jushin (phone-side) controller. Connects to the Soshin WiFi, listens only for
@@ -19,6 +20,12 @@ export interface JushinConfig {
   soshinSsid: string;
   /** WPA passphrase of the Soshin hotspot (local-only hotspots are WPA2). */
   soshinPass?: string;
+  /**
+   * Biometric prompting mode. A headless/auto-engage run must never raise a
+   * biometric prompt: "skip" short-circuits safeBio without any sensor call,
+   * recording a "skipped (headless mode)" check instead. Default "required".
+   */
+  bioMode?: "required" | "skip";
 }
 
 export class JushinController {
@@ -59,6 +66,10 @@ export class JushinController {
       success: false,
       reason,
     });
+    // Headless/auto-engage runs must never raise a biometric prompt at all.
+    if (this.config.bioMode === "skip") {
+      return failed("skipped (headless mode)");
+    }
     try {
       // Guard against a native biometric prompt that never resolves (e.g. the
       // user dismisses it) — attendance must not hang on it.
@@ -147,6 +158,10 @@ export class JushinController {
       ultrasonic: ultrasonicReport,
       biometric: this.startBio ?? undefined,
     };
+
+    // Pin the room node's clock every tick so the server can verify the
+    // relayed rolling code (the node has no NTP of its own). Fire-and-forget.
+    void postNodeTime();
 
     try {
       this.lastResult = await this.reporter.send(report);
