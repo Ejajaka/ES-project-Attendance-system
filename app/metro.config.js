@@ -6,6 +6,7 @@
 // teach Metro about the workspace root and both node_modules paths. This powers
 // both `expo start` and `expo export:embed` (release bundling).
 const { getDefaultConfig } = require("expo/metro-config");
+const { withNativeWind } = require("nativewind/metro");
 const path = require("path");
 
 const projectRoot = __dirname;
@@ -21,4 +22,7 @@ config.resolver.nodeModulesPaths = [
 ];
 config.resolver.unstable_enableSymlinks = true;
 
-module.exports = config;
+// NativeWind compiles `app/global.css` (Tailwind) and serves it to the
+// bundle. `inlineRem: 16` keeps `rem`-based Tailwind sizing truthful on native
+// (required by react-native-reusables, whose classes assume rem = 16px).
+module.exports = withNativeWind(config, { input: "./global.css", inlineRem: 16 });

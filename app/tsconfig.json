@@ -3,10 +3,22 @@
   "compilerOptions": {
     "jsx": "react-jsx",
     "noEmit": true,
-    "types": ["react"],
+    "baseUrl": ".",
+    "types": [
+      "react"
+    ],
     "paths": {
-      "shared": ["../shared/src/index.ts"]
+      "@/*": [
+        "./src/*"
+      ],
+      "shared": [
+        "../shared/src/index.ts"
+      ]
     }
   },
-  "include": ["src", "modules"]
+  "include": [
+    "src",
+    "modules",
+    "nativewind-env.d.ts"
+  ]
 }
