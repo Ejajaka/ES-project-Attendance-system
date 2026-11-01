@@ -10,7 +10,12 @@
  *      company id 0xABCD — the exact payload ShussekiBleModule.kt parses.
  *   3. Raises the fixed open `atlas` SoftAP (no password) for the receiver to
  *      join, and announces its SSID to the fusion server.
- *   4. Emits the 1.8 kHz burst presence stamp on LEDC pin ULTRASONIC_GPIO.
+ *   4. Emits the alternating 1.8/2.6 kHz burst presence stamp on LEDC pin
+ *      ULTRASONIC_GPIO.
+ *   5. Serves a clock + config endpoint on the SoftAP (port 80): a phone joined
+ *      to `atlas` can POST /api/node/time to fix the node's clock (the only
+ *      reliable path in the STA-less atlas topology) and POST /api/node/config
+ *      to point the node at a new fusion server.
  *
  * Tune the CONFIG block below per room. The server must be reachable from the
  * ESP32's network (the fusion server binds 0.0.0.0 on the dev PC).
@@ -33,6 +38,8 @@
 #include "esp_netif.h"
 #include "esp_netif_sntp.h"
 #include "esp_http_client.h"
+#include "esp_http_server.h"
+#include "nvs.h"
 #include "nvs_flash.h"
 #if CONFIG_ESP_WIFI_ENTERPRISE_SUPPORT
 #include "esp_eap_client.h"
@@ -54,8 +61,12 @@ static esp_netif_t *s_ap_netif = NULL;
 /** Stable node id advertised in the BLE beacon (shown in the receiver's link view). */
 #define NODE_ID "esp32-tx1"
 
-/** Fusion server base URL. Reachable from the ESP32's network (the dev laptop). */
+/** Fusion server base URL (default; can be overridden at runtime via NVS). */
 #define SERVER_URL "http://192.168.137.1:8787"
+
+/** NVS namespace + key holding a runtime-configured server URL. */
+#define NVS_NS "shusseki"
+#define NVS_KEY_SERVER_URL "server_url"
 
 /* Preset ROOM 01 — must match app/src/lib/presets.ts (room/session/secret). */
 #define PRESET_ROOM_ID "room-1"
@@ -69,7 +80,7 @@ static esp_netif_t *s_ap_netif = NULL;
 /**
  * Join an existing WiFi so the clock can NTP-sync and the ESP32 can reach the
  * fusion server on the same LAN. Leave STA_SSID empty to fall back to the
- * build-time clock seed (DEV_SEED_EPOCH).
+ * build-time clock seed (DEV_SEED_EPOCH) until a phone syncs /api/node/time.
  *
  * WPA2-Personal hotspot: set SSID + password.
  * WPA2-Enterprise (802.1X): set STA_ENTERPRISE 1 + STA_USERNAME.
@@ -81,13 +92,43 @@ static esp_netif_t *s_ap_netif = NULL;
 
 #define TOTP_STEP_S 30
 
-/* 1.8 kHz presence stamp on a GPIO via LEDC (drive a small amp + speaker). */
+/* 1.8/2.6 kHz alternating presence stamp on a GPIO via LEDC (drive a small amp + speaker). */
 #define ENABLE_ULTRASONIC 1
 #define ULTRASONIC_GPIO 25
 
 #ifndef DEV_SEED_EPOCH
 #define DEV_SEED_EPOCH 0
 #endif
+
+/*
+ * Alternating two-tone burst cadence (ms/Hz) for the ultrasonic stamp, matching
+ * ShussekiUltrasonicModule.kt: 4 bursts of TONE_MS with BURST_GAP_MS between
+ * them, then QUIET_MS of silence. Bursts ALTERNATE between STAMP_FREQ_A and
+ * STAMP_FREQ_B (A, B, A, B) so a stationary narrowband jammer parked on one
+ * frequency can only cover half of the pattern. The receiver aligns on the
+ * total pattern length, so the burst task must keep the cycle period steady.
+ */
+#define BURST_TONE_MS 120
+#define BURST_COUNT 4
+#define BURST_GAP_MS 220
+#define BURST_QUIET_MS 1000
+#define BURST_PERIOD_MS (BURST_COUNT * BURST_TONE_MS + (BURST_COUNT - 1) * BURST_GAP_MS + BURST_QUIET_MS)
+#define STAMP_FREQ_A 1800
+#define STAMP_FREQ_B 2600
+
+/* Sync-task cadence: announce ~every 50 s, poll presence ~every 25 s. */
+#define ANNOUNCE_PERIOD_MS 50000
+#define POLL_PERIOD_MS 25000
+/** Backoff multiplier applied to ANNOUNCE_PERIOD_MS after a failed announce. */
+#define ANNOUNCE_BACKOFF_FACTOR 4
+
+/*
+ * A phone's clock is the source of truth here: accept an offer within
+ * ±CLOCK_SYNC_TOL_S of the node's own time, OR any monotonically newer value.
+ * Only a stale (older-than-tolerance) value is rejected so garbage can never
+ * rewind the clock.
+ */
+#define CLOCK_SYNC_TOL_S 90
 
 /* --------------------------------------------------------------------- TOTP */
 
@@ -268,15 +309,22 @@ static void base64_utf8(const char *in, char *out, size_t outsz)
 
 /* --------------------------------------------------------------------- HTTP */
 
+/** Server URL for outbound calls. Default SERVER_URL; overridden from NVS. */
+static char s_server_url[128] = SERVER_URL;
+
 static int http_post_json(const char *path, const char *body)
 {
-    char url[192];
-    snprintf(url, sizeof(url), "%s%s", SERVER_URL, path);
+    if (strlen(s_server_url) == 0) {
+        /* No server configured yet: skip the call cleanly instead of erroring. */
+        return 0;
+    }
+    char url[256];
+    snprintf(url, sizeof(url), "%s%s", s_server_url, path);
 
     esp_http_client_config_t cfg = {
         .url = url,
         .method = HTTP_METHOD_POST,
-        .timeout_ms = 5000,
+        .timeout_ms = 2000,
     };
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
     if (!c) {
@@ -288,6 +336,217 @@ static int http_post_json(const char *path, const char *body)
     int status = (err == ESP_OK) ? esp_http_client_get_status_code(c) : -1;
     esp_http_client_cleanup(c);
     return status;
+}
+
+/* --------------------------------------------------------------------- NVS */
+
+/** Load a runtime server URL out of NVS (set via /api/node/config), if any. */
+static void config_load_from_nvs(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) == ESP_OK) {
+        size_t len = sizeof(s_server_url) - 1;
+        esp_err_t err = nvs_get_str(h, NVS_KEY_SERVER_URL, s_server_url, &len);
+        nvs_close(h);
+        if (err == ESP_OK) {
+            ESP_LOGI(TAG, "server URL from NVS: %s", s_server_url);
+        }
+    }
+    if (strlen(s_server_url) == 0) {
+        ESP_LOGI(TAG, "no server URL configured; sync task is idle");
+    }
+}
+
+/** Persist a new server URL into NVS (used immediately, and across reboots). */
+static esp_err_t config_save_server_url(const char *url)
+{
+    nvs_handle_t h;
+    esp_err_t err;
+    if ((err = nvs_open(NVS_NS, NVS_READWRITE, &h)) != ESP_OK) {
+        return err;
+    }
+    if ((err = nvs_set_str(h, NVS_KEY_SERVER_URL, url)) != ESP_OK) {
+        nvs_close(h);
+        return err;
+    }
+    err = nvs_commit(h);
+    nvs_close(h);
+    return err;
+}
+
+/* ----------------------------------------------------------------- node api */
+
+/*
+ * HTTP server on the SoftAP (192.168.4.1): a phone joined to `atlas` syncs the
+ * node's clock and configures the fusion server here.
+ *
+ *   POST /api/node/time?unix=<seconds> | ?ms=<millis>
+ *   POST /api/node/config?serverUrl=<url>
+ *   GET  /api/node  -> diagnostics JSON
+ *
+ * These handlers run in esp_http_server's own task; they never touch BLE.
+ */
+
+static httpd_handle_t s_httpd = NULL;
+
+static void send_status(httpd_req_t *req, const char *status)
+{
+    httpd_resp_set_status(req, status);
+    httpd_resp_send(req, NULL, 0);
+}
+
+/** Receive + discard the request body so the client sees a clean response. */
+static void httpd_drain_body(httpd_req_t *req)
+{
+    char sink[64];
+    int remaining = (int)req->content_len;
+    while (remaining > 0) {
+        int n = httpd_req_recv(req, sink, remaining < (int)sizeof(sink)
+                                   ? remaining
+                                   : (int)sizeof(sink));
+        if (n <= 0) {
+            break;
+        }
+        remaining -= n;
+    }
+}
+
+/** Parse ?unix=<seconds> or ?ms=<millis>; stores the result in seconds. */
+static bool httpd_time_query(httpd_req_t *req, const char *name, time_t *out)
+{
+    char val[128];
+    if (httpd_req_get_url_query_str(req, val, sizeof(val)) != ESP_OK) {
+        return false;
+    }
+    char arg[24];
+    if (httpd_query_key_value(val, name, arg, sizeof(arg)) != ESP_OK) {
+        return false;
+    }
+    char *end = NULL;
+    unsigned long long n = strtoull(arg, &end, 10);
+    if (end == arg || *end != '\0' || n == 0) {
+        return false;
+    }
+    *out = (time_t)(strcmp(name, "ms") == 0 ? n / 1000 : n);
+    return true;
+}
+
+/** POST /api/node/time — ingest the phone's clock (guarded, monotonic). */
+static esp_err_t node_time_post(httpd_req_t *req)
+{
+    httpd_drain_body(req);
+
+    time_t offered = 0;
+    if (!httpd_time_query(req, "unix", &offered) &&
+        !httpd_time_query(req, "ms", &offered)) {
+        ESP_LOGW(TAG, "[time-sync] rejected: missing/invalid ?unix or ?ms");
+        send_status(req, "400 Bad Request");
+        return ESP_OK;
+    }
+
+    time_t now = time(NULL);
+    long delta = (long)(offered - now);
+    if (delta < -CLOCK_SYNC_TOL_S) {
+        /* Stale offer: applying it would rewind the clock — refuse. */
+        ESP_LOGW(TAG, "[time-sync] REJECTED offered=%ld (node=%ld, delta=%ld s "
+                      "stale — refusing to rewind)",
+                 (long)offered, (long)now, delta);
+        send_status(req, "409 Conflict");
+        return ESP_OK;
+    }
+
+    struct timeval tv = {.tv_sec = offered, .tv_usec = 0};
+    settimeofday(&tv, NULL);
+    ESP_LOGI(TAG, "[time-sync] accepted offered=%ld (node was %ld, delta=%ld s), "
+                  "clock now %ld",
+             (long)offered, (long)now, delta, (long)time(NULL));
+    send_status(req, "204 No Content");
+    return ESP_OK;
+}
+
+/** POST /api/node/config — set the fusion server URL (NVS + RAM). */
+static esp_err_t node_config_post(httpd_req_t *req)
+{
+    httpd_drain_body(req);
+
+    char query[256];
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) {
+        ESP_LOGW(TAG, "[config] rejected: missing query (?serverUrl=...)");
+        send_status(req, "400 Bad Request");
+        return ESP_OK;
+    }
+    char url[128];
+    if (httpd_query_key_value(query, "serverUrl", url, sizeof(url)) != ESP_OK) {
+        ESP_LOGW(TAG, "[config] rejected: missing/runt serverUrl");
+        send_status(req, "400 Bad Request");
+        return ESP_OK;
+    }
+    if (strncmp(url, "http", 4) != 0 || strlen(url) < 10) {
+        ESP_LOGW(TAG, "[config] rejected: serverUrl not a URL: '%s'", url);
+        send_status(req, "400 Bad Request");
+        return ESP_OK;
+    }
+
+    /* URL-unescape (a curl/phone URL query must be %xx-decoded before use). */
+    for (char *w = url, *r = url; ; ++w, ++r) {
+        if (*r == '%' && r[1] && r[2]) {
+            char hex[3] = {(char)r[1], (char)r[2], 0};
+            *w = (char)strtol(hex, NULL, 16);
+            r += 2;
+            continue;
+        }
+        *w = *r;
+        if (!*r) {
+            break;
+        }
+    }
+
+    esp_err_t err = config_save_server_url(url);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "[config] NVS write failed: 0x%x", err);
+        send_status(req, "500 Internal Server Error");
+        return ESP_OK;
+    }
+
+    snprintf(s_server_url, sizeof(s_server_url), "%s", url);
+    ESP_LOGI(TAG, "[config] server URL set to %s", s_server_url);
+    send_status(req, "204 No Content");
+    return ESP_OK;
+}
+
+/** GET /api/node — diagnostics: node, session, room, SSID, server, clock. */
+static esp_err_t node_get(httpd_req_t *req)
+{
+    char json[256];
+    snprintf(json, sizeof(json),
+             "{\"nodeId\":\"%s\",\"sessionId\":\"%s\",\"roomId\":\"%s\","
+             "\"ssid\":\"%s\",\"serverUrl\":\"%s\",\"unix\":%ld}",
+             NODE_ID, PRESET_SESSION_ID, PRESET_ROOM_ID, AP_SSID, s_server_url,
+             (long)time(NULL));
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+static const httpd_uri_t node_api_uris[] = {
+    {.uri = "/api/node/time", .method = HTTP_POST, .handler = node_time_post},
+    {.uri = "/api/node/config", .method = HTTP_POST, .handler = node_config_post},
+    {.uri = "/api/node", .method = HTTP_GET, .handler = node_get},
+};
+
+static void node_api_init(void)
+{
+    httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
+    cfg.lru_purge_enable = true;
+    if (httpd_start(&s_httpd, &cfg) == ESP_OK) {
+        for (size_t i = 0; i < sizeof(node_api_uris) / sizeof(node_api_uris[0]); i++) {
+            httpd_register_uri_handler(s_httpd, &node_api_uris[i]);
+        }
+        ESP_LOGI(TAG, "node API on SoftAP port 80: /api/node/time /api/node/config "
+                      "/api/node");
+    } else {
+        ESP_LOGW(TAG, "node API start failed");
+    }
 }
 
 /* ---------------------------------------------------------------------- BLE */
@@ -478,7 +737,7 @@ static void ultrasonic_init(void)
         .speed_mode = LEDC_LOW_SPEED_MODE,
         .duty_resolution = LEDC_TIMER_10_BIT,
         .timer_num = LEDC_TIMER_0,
-        .freq_hz = 1800,
+        .freq_hz = STAMP_FREQ_A,
         .clk_cfg = LEDC_AUTO_CLK,
     };
     ESP_ERROR_CHECK(ledc_timer_config(&t));
@@ -493,30 +752,65 @@ static void ultrasonic_init(void)
         .hpoint = 0,
     };
     ESP_ERROR_CHECK(ledc_channel_config(&c));
-    ESP_LOGI(TAG, "ultrasonic stamp on GPIO%d @ 1800 Hz", ULTRASONIC_GPIO);
+    ESP_LOGI(TAG, "ultrasonic stamp on GPIO%d @ %d/%d Hz alternating bursts",
+             ULTRASONIC_GPIO, STAMP_FREQ_A, STAMP_FREQ_B);
 #endif
 }
 
-/** 4 x 120 ms tone bursts with 220 ms gaps — matches ShussekiUltrasonicModule.kt. */
+/**
+ * 4 x 120 ms tone bursts with 220 ms gaps, alternating between STAMP_FREQ_A
+ * and STAMP_FREQ_B (A, B, A, B) — matches ShussekiUltrasonicModule.kt.
+ * LEDC retunes the shared timer mid-stream via ledc_set_freq(). Emits exactly
+ * one full pattern and returns; the burst task fires it on a steady period so
+ * the receiver can align on the pattern length.
+ */
 static void ultrasonic_burst(void)
 {
 #if ENABLE_ULTRASONIC
-    for (int i = 0; i < 4; i++) {
+    static const int burst_freqs[BURST_COUNT] = {STAMP_FREQ_A, STAMP_FREQ_B,
+                                                 STAMP_FREQ_A, STAMP_FREQ_B};
+    for (int i = 0; i < BURST_COUNT; i++) {
+        ESP_ERROR_CHECK(
+            ledc_set_freq(LEDC_LOW_SPEED_MODE, LEDC_TIMER_0, burst_freqs[i]));
         ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 512 /* 50% */);
         ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
-        vTaskDelay(pdMS_TO_TICKS(120));
+        vTaskDelay(pdMS_TO_TICKS(BURST_TONE_MS));
         ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
         ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
-        if (i < 3) {
-            vTaskDelay(pdMS_TO_TICKS(220));
+        if (i < BURST_COUNT - 1) {
+            vTaskDelay(pdMS_TO_TICKS(BURST_GAP_MS));
         }
     }
 #endif
 }
 
-/* ------------------------------------------------------------------- main task */
+/**
+ * Dedicated burst task: every cycle is exactly BURST_PERIOD_MS
+ * (4 x 120 ms tone + 3 x 220 ms gap + ~1000 ms quiet), independent of any
+ * HTTP call in the sync task — the cadence must never slide.
+ */
+static void burst_task(void *arg)
+{
+#if ENABLE_ULTRASONIC
+    TickType_t last_wake = xTaskGetTickCount();
+    for (;;) {
+        ultrasonic_burst();
+        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(BURST_PERIOD_MS));
+    }
+#else
+    vTaskDelete(NULL);
+#endif
+}
 
-static void announce_session(void)
+/* ------------------------------------------------------------------- sync task */
+
+/**
+ * Announce session + hotspot registration. Returns true only when BOTH POSTs
+ * got a 2xx (http_post_json returns 0 when no server is configured, treated as
+ * skip) — a session that announced a hotspot without registering the secret is
+ * not a healthy announce.
+ */
+static bool announce_session(void)
 {
     char secret_b64[64];
     base64_utf8(PRESET_SECRET, secret_b64, sizeof(secret_b64));
@@ -525,26 +819,35 @@ static void announce_session(void)
     snprintf(body, sizeof(body),
              "{\"sessionId\":\"%s\",\"roomId\":\"%s\",\"secret\":\"%s\"}",
              PRESET_SESSION_ID, PRESET_ROOM_ID, secret_b64);
-    ESP_LOGI(TAG, "POST /api/sessions -> %d", http_post_json("/api/sessions", body));
+    int status_session = http_post_json("/api/sessions", body);
+    ESP_LOGI(TAG, "POST /api/sessions -> %d", status_session);
 
     snprintf(body, sizeof(body),
              "{\"deviceId\":\"%s\",\"ssid\":\"%s\",\"passphrase\":\"%s\"}",
              NODE_ID, AP_SSID, AP_PASS);
+    int status_hotspot =
+        http_post_json("/api/sessions/" PRESET_SESSION_ID "/hotspot", body);
     ESP_LOGI(TAG, "POST /api/sessions/" PRESET_SESSION_ID "/hotspot -> %d",
-             http_post_json("/api/sessions/" PRESET_SESSION_ID "/hotspot", body));
+             status_hotspot);
+
+    return status_session >= 200 && status_session < 300 &&
+           status_hotspot >= 200 && status_hotspot < 300;
 }
 
 /** Room-side "receive": fetch the server's presence roster and report the count. */
 static void poll_presence(void)
 {
-    char url[192];
-    snprintf(url, sizeof(url), "%s/api/sessions/%s/presence", SERVER_URL,
+    if (strlen(s_server_url) == 0) {
+        return;
+    }
+    char url[256];
+    snprintf(url, sizeof(url), "%s/api/sessions/%s/presence", s_server_url,
              PRESET_SESSION_ID);
 
     esp_http_client_config_t cfg = {
         .url = url,
         .method = HTTP_METHOD_GET,
-        .timeout_ms = 5000,
+        .timeout_ms = 2000,
     };
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
     if (!c) {
@@ -574,27 +877,75 @@ static void poll_presence(void)
     esp_http_client_cleanup(c);
 }
 
-static void transmitter_task(void *arg)
+/**
+ * Own FreeRTOS task for ALL blocking server HTTP: re-announce (~every 50 s) and
+ * poll presence (~every 25 s), hiding failures from the burst + BLE cadence.
+ * If the last announce failed, it backs off — the next one waits ~4x longer.
+ */
+static void sync_task(void *arg)
+{
+    /* The first announce fires immediately (mirrors the old startup announce). */
+    TickType_t last_announce = xTaskGetTickCount() - pdMS_TO_TICKS(ANNOUNCE_PERIOD_MS);
+    TickType_t last_poll = xTaskGetTickCount();
+    bool announce_backoff = false;
+    bool server_configured = strlen(s_server_url) > 0;
+
+    for (;;) {
+        TickType_t now_ticks = xTaskGetTickCount();
+
+        /* Re-pick the runtime server URL so a fresh /api/node/config is honoured. */
+        bool configured = strlen(s_server_url) > 0;
+        if (configured != server_configured) {
+            server_configured = configured;
+            announce_backoff = false; /* first attempt after (re)config: no backoff */
+        }
+
+        /* A failed announce backs the next re-announcement off by 4x, so a
+           dead/unreachable server can't hog the sync task while it stalls. */
+        TickType_t announce_target =
+            pdMS_TO_TICKS(ANNOUNCE_PERIOD_MS * (announce_backoff
+                                                   ? ANNOUNCE_BACKOFF_FACTOR
+                                                   : 1));
+        if (now_ticks - last_announce >= announce_target) {
+            if (configured) {
+                last_announce = now_ticks;
+                announce_backoff = !announce_session();
+            } else {
+                /* Idle until configured; retry softly so a config change lands fast. */
+                last_announce = now_ticks - pdMS_TO_TICKS(ANNOUNCE_PERIOD_MS);
+            }
+        }
+
+        if (now_ticks - last_poll >= pdMS_TO_TICKS(POLL_PERIOD_MS)) {
+            last_poll = now_ticks;
+            if (configured) {
+                poll_presence();
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+
+/* --------------------------------------------------------------------- BLE task */
+
+/**
+ * BLE refresh task (runs alone — the only task touching the GAP functions).
+ * Rolls the TOTP and re-advertises on every step change.
+ */
+static void ble_task(void *arg)
 {
     char code[7];
-
-    /* Deterministic sanity vector: counter 0 is verifiable against shared/Node. */
-    totp_code_for(PRESET_SECRET, 0, code);
-    ESP_LOGI(TAG, "[totp] sanity counter=0 code=%s", code);
-
-    /* Start the BLE beacon before any blocking HTTP: a room with no server
-       must still be discoverable by receivers. */
-    totp_code_for(PRESET_SECRET, (uint64_t)time(NULL) / TOTP_STEP_S, code);
-    ble_advertise_code(code);
-
-    announce_session();
-
     uint64_t last_step = UINT64_MAX;
-    int loops = 0;
+
     for (;;) {
         time_t now = time(NULL);
         uint64_t step = (uint64_t)now / TOTP_STEP_S;
-
+        if (last_step == UINT64_MAX) {
+            /* Deterministic sanity vector: counter 0 is verifiable against shared/Node. */
+            totp_code_for(PRESET_SECRET, 0, code);
+            ESP_LOGI(TAG, "[totp] sanity counter=0 code=%s", code);
+        }
         if (step != last_step) {
             last_step = step;
             totp_code_for(PRESET_SECRET, step, code);
@@ -602,17 +953,6 @@ static void transmitter_task(void *arg)
                      (unsigned long long)step, code);
             ble_advertise_code(code);
         }
-
-        if (++loops % 12 == 0) {
-            poll_presence();
-        }
-        if (loops % 24 == 0) {
-            // Re-announce periodically so a server restart doesn't drop the
-            // session/hotspot registration (the server is an in-memory store).
-            announce_session();
-        }
-
-        ultrasonic_burst();
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
@@ -629,10 +969,15 @@ void app_main(void)
         ESP_ERROR_CHECK(nvs_flash_init());
     }
 
+    config_load_from_nvs();
+
     wifi_init();
     time_init();
     ultrasonic_init();
     bt_init();
+    node_api_init();
 
-    xTaskCreate(transmitter_task, "tx", 8192, NULL, 5, NULL);
+    xTaskCreate(burst_task, "burst", 4096, NULL, 5, NULL);
+    xTaskCreate(sync_task, "sync", 6144, NULL, 5, NULL);
+    xTaskCreate(ble_task, "ble", 6144, NULL, 5, NULL);
 }
