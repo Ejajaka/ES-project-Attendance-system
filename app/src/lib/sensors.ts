@@ -1,7 +1,6 @@
 import type {
   BleObservation,
   WifiObservation,
-  UltrasonicObservation,
   BiometricCheck,
   BleNodeReading,
 } from "shared";
@@ -45,19 +44,6 @@ export interface WifiAdapter {
   stopHotspot?: () => Promise<void>;
 }
 
-export interface UltrasonicAdapter {
-  /** Soshin: emit the repeating chirp presence stamp. */
-  transmit(code: string): Promise<void>;
-  /** Jushin: listen and decide whether the room's chirp stamp is present. */
-  listen(): Promise<UltrasonicObservation>;
-  startListener(): Promise<void>;
-  stopListener(): Promise<void>;
-  /** Prompt for the microphone permission. */
-  requestPermissions?: () => Promise<boolean>;
-  /** Non-prompting check for the microphone permission. */
-  getPermissions?: () => Promise<boolean>;
-}
-
 export interface BiometricAdapter {
   perform(kind: "fingerprint" | "face"): Promise<BiometricCheck>;
 }
@@ -65,7 +51,6 @@ export interface BiometricAdapter {
 export interface DeviceSensors {
   ble: BleAdapter;
   wifi: WifiAdapter;
-  ultrasonic: UltrasonicAdapter;
   biometric: BiometricAdapter;
 }
 

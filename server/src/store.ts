@@ -230,6 +230,16 @@ export class MemoryStore implements Store {
       list[i] = next;
       this.rosters.set(sessionId, list);
     }
+    // One phone = one student: a re-enrolment must not leave the old student
+    // bound to this device (which made both rows look present).
+    if (student.deviceId) {
+      for (let j = 0; j < list.length; j++) {
+        if (j !== i && list[j]?.deviceId === student.deviceId) {
+          list[j] = { ...list[j]!, deviceId: undefined };
+        }
+      }
+      this.rosters.set(sessionId, list);
+    }
   }
 
   recordSample(
@@ -255,6 +265,7 @@ export class MemoryStore implements Store {
         presentMs: 0,
         samples: 1,
         present,
+        everPresent: present,
       });
       return;
     }
@@ -268,6 +279,9 @@ export class MemoryStore implements Store {
     if (at < t.firstSeen) t.firstSeen = at;
     if (at > t.lastSeen) t.lastSeen = at;
     t.samples += 1;
+    // Latch before overwriting `present`, and inherit a pre-upgrade timeline's
+    // last present state so an existing register row stays marked.
+    t.everPresent = (t.everPresent ?? t.present) || present;
     t.present = present;
     if (studentId) t.studentId = studentId;
   }

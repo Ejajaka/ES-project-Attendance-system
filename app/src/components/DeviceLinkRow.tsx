@@ -61,7 +61,6 @@ export function DeviceLinkRow({
           numberOfLines={1}
         >
           {linkChips(device.link)} · {quality}%
-          {device.ultrasonicServerValid ? " · CODE ✓" : ""}
         </Text>
         <Badge variant={stateVariant(linkState, device.present)}>
           <Text>{linkStateLabel(linkState ?? "lost")}</Text>

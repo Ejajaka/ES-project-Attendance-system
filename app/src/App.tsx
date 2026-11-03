@@ -292,7 +292,7 @@ function HomeScreen({
         {/* PRIMARY ACTIONS */}
         <ActionCard
           title="Receiver"
-          description="Listen to the room: BLE + WiFi + ultrasonic fusion, biometric check, report to the session."
+              description="Listen to the room: BLE + WiFi fusion, biometric check, report to the session."
           onPress={() => onPick("jushin")}
           testID="home-open-receiver"
         />

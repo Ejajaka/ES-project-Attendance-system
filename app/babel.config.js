@@ -14,9 +14,10 @@ module.exports = function (api) {
       [
         "module-resolver",
         {
-          root: ["."],
+          root: [__dirname],
           alias: {
-            "@": "./src",
+            // Absolute so release bundling (CWD = repo root) still resolves it.
+            "@": require("path").resolve(__dirname, "src"),
           },
         },
       ],

@@ -91,7 +91,6 @@ export function buildChecks(settings: Settings, serverUrl: string): Check[] {
         const requested = await Promise.all([
           ["ble", await request(sensors.ble.requestPermissions?.())],
           ["wifi", await request(sensors.wifi.requestPermissions?.())],
-          ["ultrasonic", await request(sensors.ultrasonic.requestPermissions?.())],
         ] as const);
 
         const unverified = requested.filter(([, ok]) => ok === null).map(([n]) => n);
@@ -103,7 +102,6 @@ export function buildChecks(settings: Settings, serverUrl: string): Check[] {
         if (unverified.length > 0) {
           const fallback = await Promise.all([
             sensors.ble.getPermissions?.() ?? Promise.resolve(true),
-            sensors.ultrasonic.getPermissions?.() ?? Promise.resolve(true),
           ]);
           if (fallback.every(Boolean)) return "granted (prompt stalled; non-prompting check ok)";
           throw new Error(`unverified & not confirmed: ${unverified.join(", ")}`);

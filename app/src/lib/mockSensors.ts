@@ -1,11 +1,10 @@
 import type {
   BleObservation,
   WifiObservation,
-  UltrasonicObservation,
   BiometricCheck,
   BleNodeReading,
 } from "shared";
-import type { DeviceSensors, BleAdapter, WifiAdapter, UltrasonicAdapter, BiometricAdapter } from "./sensors";
+import type { DeviceSensors, BleAdapter, WifiAdapter, BiometricAdapter } from "./sensors";
 
 /**
  * In-memory sensor stand-in. Tests set the public fields; the real app swaps in
@@ -15,15 +14,13 @@ import type { DeviceSensors, BleAdapter, WifiAdapter, UltrasonicAdapter, Biometr
 export class MockSensors implements DeviceSensors {
   bleReadings: BleNodeReading[] = [];
   wifiState: WifiObservation = { connectedToSoshin: false, soshinRssi: null };
-  ultrasonicResponse: UltrasonicObservation = { received: false, valid: null, code: null };
   biometricResult: BiometricCheck = {
     performedAt: 0,
     kind: "fingerprint",
     success: true,
   };
-  transmittedCodes: string[] = [];
-  started = { ble: false, ultrasonic: false };
-  permissionsRequested = { ble: false, wifi: false, ultrasonic: false };
+  started = { ble: false };
+  permissionsRequested = { ble: false, wifi: false };
   hotspot: { ssid: string; passphrase: string } | null = null;
   lastJoin: { ssid: string; passphrase?: string } | null = null;
 
@@ -57,22 +54,6 @@ export class MockSensors implements DeviceSensors {
     stopHotspot: async () => {
       this.hotspot = null;
     },
-  };
-
-  ultrasonic: UltrasonicAdapter = {
-    transmit: async (code: string) => {
-      this.transmittedCodes.push(code);
-    },
-    listen: async (): Promise<UltrasonicObservation> => this.ultrasonicResponse,
-    startListener: async () => {
-      this.started.ultrasonic = true;
-    },
-    stopListener: async () => {},
-    requestPermissions: async () => {
-      this.permissionsRequested.ultrasonic = true;
-      return true;
-    },
-    getPermissions: async () => true,
   };
 
   biometric: BiometricAdapter = {

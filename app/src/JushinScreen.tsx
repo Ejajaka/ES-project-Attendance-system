@@ -4,7 +4,6 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import {
   bleConfidence,
   wifiConfidence,
-  ultrasonicConfidence,
   fuse,
   decide,
   summarizeLink,
@@ -12,15 +11,15 @@ import {
   averageRecent,
   type DeviceReport,
   type LinkSummary,
+  type BiometricCheck,
 } from "shared";
 import { NativeSensors } from "./lib/nativeSensors";
 import { ATLAS_SSID, type Settings } from "./settings";
 import { JushinController, type JushinConfig } from "./lib/modes/jushin";
 import { HttpReporter, type ReportResult } from "./lib/reporter";
-import { ensureSession, postNodeConfig, postNodeTime, postTelemetry, type ServerPresence } from "./lib/server";
+import { ensureSession, postNodeConfig, postNodeTime, type ServerPresence } from "./lib/server";
 import { useSessionPresence } from "./lib/useSessionPresence";
 import { modalityLabel } from "./lib/linkView";
-import { appendSample, type SignalSample } from "./lib/signalGraph";
 import { loadPersistentDeviceId } from "./lib/persistentDeviceId";
 import { MONO } from "./theme";
 import { Badge } from "@/components/ui/badge";
@@ -34,14 +33,27 @@ import {
 } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Text } from "@/components/ui/text";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  loadIdentity,
+  saveIdentity,
+  type StudentIdentity,
+} from "./lib/identityStore";
 import { JsonBlock } from "./components/JsonBlock";
 import { DataRow } from "./components/DataRow";
 import { DeviceLinkRow } from "./components/DeviceLinkRow";
-import { SignalGraph } from "./components/SignalGraph";
+import { LiveSignalGraph } from "./components/LiveSignalGraph";
 import { logPayload } from "./components/debug/log";
 import { Chevron } from "./components/Chevron";
 
 const TICK_MS = 5000;
+
+/**
+ * Fingerprint is optional for now (the single-finger restriction is not
+ * enforceable on a phone). Set to true to require it again.
+ */
+const BIOMETRIC_REQUIRED = false;
 
 function fmtTime(t: number): string {
   return new Date(t).toLocaleTimeString();
@@ -50,7 +62,6 @@ function fmtTime(t: number): string {
 interface LocalConfidence {
   ble: number | null;
   wifi: number | null;
-  ultrasonic: number | null;
   fused: number;
   present: boolean;
 }
@@ -91,6 +102,10 @@ export default function JushinScreen({
   // This phone's report identity — resolved from disk at engage time, so a
   // restart keeps reporting as the same device.
   const [deviceId, setDeviceId] = useState<string | null>(null);
+  const [identity, setIdentity] = useState<StudentIdentity | null>(null);
+  const [enrollId, setEnrollId] = useState(settings.studentId ?? "");
+  const [enrollName, setEnrollName] = useState(settings.studentName ?? "");
+  const [enrollMsg, setEnrollMsg] = useState<string | null>(null);
   const [traceReset, setTraceReset] = useState(0);
   const [signalVerdict, setSignalVerdict] = useState<boolean | null>(null);
   // 1 s ticker so "last seen Xs ago" visibly counts down while engaged.
@@ -112,6 +127,35 @@ export default function JushinScreen({
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, [running]);
+
+  // First-time enrolment: roll + name are saved on this phone after a
+  // successful fingerprint check, and the identity is reused forever after.
+  useEffect(() => {
+    void loadIdentity().then((id) => {
+      if (!id) return;
+      setIdentity(id);
+      setEnrollId(id.studentId);
+      setEnrollName(id.studentName);
+    });
+  }, []);
+
+  const enroll = async () => {
+    const studentId = enrollId.trim();
+    const studentName = enrollName.trim();
+    if (!studentId || !studentName) {
+      setEnrollMsg("Enter both roll number and name.");
+      return;
+    }
+    const next = { studentId, studentName, enrolledAt: Date.now() };
+    try {
+      await saveIdentity(next);
+    } catch {
+      setEnrollMsg("Could not save the identity on this phone.");
+      return;
+    }
+    setIdentity(next);
+    setEnrollMsg(null);
+  };
 
   /**
    * Local absent/present rule: rolling-average WiFi (smooths spikes) AND the
@@ -164,20 +208,25 @@ export default function JushinScreen({
       const reporter = new HttpReporter(serverUrl);
       const config: JushinConfig = {
         deviceId: persistentDeviceId,
-        studentId: settings.studentId || undefined,
-        studentName: settings.studentName || undefined,
+        studentId: identity?.studentId || settings.studentId || undefined,
+        studentName: identity?.studentName || settings.studentName || undefined,
         roomId: settings.roomId,
         sessionId: settings.sessionId,
         soshinSsid: ssid,
         // Empty = open network (atlas). CONFIG can still pin a WPA2 fallback.
         soshinPass: settings.soshinPass || undefined,
-        // Headless deep-link runs must never show a biometric prompt.
-        bioMode: bioSkip ? "skip" : "required",
+        // Headless deep-link runs and the relaxed default never prompt.
+        bioMode: bioSkip || !BIOMETRIC_REQUIRED ? "skip" : "required",
       };
       const controller = new JushinController(sensors, config, reporter);
       const b = await controller.startAttendance();
-      setBio(`${b.kind} (${b.success ? "ok" : `failed: ${b.reason ?? "unknown"}`})`);
-      setBioOk(b.success);
+      const skipped = b.reason?.includes("skipped") ?? false;
+      setBio(
+        skipped
+          ? "not required"
+          : `${b.kind} (${b.success ? "ok" : `failed: ${b.reason ?? "unknown"}`})`,
+      );
+      setBioOk(skipped ? null : b.success);
       controllerRef.current = controller;
       setRunning(true);
       setStartedAt(Date.now());
@@ -238,7 +287,7 @@ export default function JushinScreen({
             setEvent(
               v
                 ? {
-                    text: `RECOGNIZED · fused=${(r?.presence?.fused ?? 0).toFixed(3)} · ultrasonicServerValid=${r?.presence?.ultrasonicServerValid}`,
+                    text: `RECOGNIZED · fused=${(r?.presence?.fused ?? 0).toFixed(3)}`,
                     kind: "ok",
                   }
                 : {
@@ -311,14 +360,12 @@ export default function JushinScreen({
   const uptime = startedAt ? Math.round((now - startedAt) / 1000) : 0;
   const sp = lastResult?.presence ?? null;
   const rtt = lastResult?.rttMs ?? null;
-  const verdict = signalVerdict ?? sp?.present ?? null;
+  const verdict = sp?.present ?? signalVerdict ?? null;
   // Countdown: seconds since the last completed 5 s report tick.
   const lastSeen = lastReport ? Math.max(0, Math.round((now - lastReport.timestamp) / 1000)) : null;
   // Connection stats to the transmitter, from this phone's last report. The
-  // server's verdict overrules the client's ultrasonic validity when present.
-  const link: LinkSummary | null = lastReport
-    ? summarizeLink(lastReport, { ultrasonicValid: sp?.ultrasonicServerValid })
-    : null;
+  // Link summary from the last report.
+  const link: LinkSummary | null = lastReport ? summarizeLink(lastReport) : null;
 
   const verdictBadge = () => {
     if (!running) return <Badge variant="secondary"><Text>standby</Text></Badge>;
@@ -344,6 +391,48 @@ export default function JushinScreen({
       </View>
       <ScrollView className="flex-1">
         <View className="gap-4 p-4 pb-8">
+          {!identity ? (
+            <Card>
+              <CardHeader>
+                <CardTitle>Enroll this phone</CardTitle>
+                <CardDescription>
+                  Enter your roll and name once. It is saved on this device and
+                  reused for every engagement.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="gap-3">
+                <Label>Roll number</Label>
+                <Input
+                  value={enrollId}
+                  onChangeText={setEnrollId}
+                  placeholder="bl.sc.u4cse...."
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+                <Label>Name</Label>
+                <Input
+                  value={enrollName}
+                  onChangeText={setEnrollName}
+                  placeholder="Your name"
+                />
+                {enrollMsg ? (
+                  <Text className="text-sm text-destructive">{enrollMsg}</Text>
+                ) : null}
+                <Button onPress={() => void enroll()}>
+                  <Text>Save identity</Text>
+                </Button>
+              </CardContent>
+            </Card>
+          ) : (
+            <View className="flex-row items-center justify-between rounded-lg border border-border p-3">
+              <Text className="text-sm text-muted-foreground">
+                {identity.studentName} · {identity.studentId}
+              </Text>
+              <Badge variant="secondary">
+                <Text>enrolled</Text>
+              </Badge>
+            </View>
+          )}
           {/* PRESENCE — verdict + honest "last seen" countdown */}
           <Card>
             <CardHeader>
@@ -361,19 +450,7 @@ export default function JushinScreen({
             </CardHeader>
             <CardContent className="gap-2">
               {verdict != null && sp ? (
-                <>
-                  <DataRow label="fused (server)" value={`${sp.fused.toFixed(3)}`} />
-                  <DataRow
-                    label="server code check"
-                    value={
-                      sp.ultrasonicServerValid == null
-                        ? "—"
-                        : sp.ultrasonicServerValid
-                          ? "verified"
-                          : "invalid"
-                    }
-                  />
-                </>
+                <DataRow label="fused (server)" value={`${sp.fused.toFixed(3)}`} />
               ) : (
                 <DataRow label="source" value={running ? "local signal rule only" : "no data yet"} />
               )}
@@ -431,7 +508,6 @@ export default function JushinScreen({
                     [
                       ["ble", local.ble, "BLE"],
                       ["wifi", local.wifi, "WiFi"],
-                      ["ultrasonic", local.ultrasonic, "Ultrasonic"],
                     ] as const
                   ).map(([key, value, label]) => (
                     <View key={key} className="gap-1">
@@ -455,14 +531,6 @@ export default function JushinScreen({
                                   : ""
                               }`
                             : "not joined"
-                        }
-                      />
-                      <DataRow
-                        label="Ultrasonic"
-                        value={
-                          lastReport.ultrasonic?.received
-                            ? `snr ${lastReport.ultrasonic.snr?.toFixed(1) ?? "—"}`
-                            : (lastReport.ultrasonic?.missReason ?? "missed")
                         }
                       />
                     </>
@@ -638,80 +706,12 @@ function computeLocal(report: DeviceReport): LocalConfidence {
         soshinRssi: report.wifi.soshinRssi,
       })
     : null;
-  const ultrasonic = report.ultrasonic
-    ? ultrasonicConfidence({
-        received: report.ultrasonic.received,
-        valid: report.ultrasonic.valid,
-      })
-    : null;
 
-  const present = { ble, wifi, ultrasonic } as Record<string, number | null>;
   const confs: Partial<Record<"ble" | "wifi" | "ultrasonic", number>> = {};
-  for (const k of ["ble", "wifi", "ultrasonic"] as const) {
-    if (present[k] != null) confs[k] = present[k]!;
-  }
+  if (ble != null) confs.ble = ble;
+  if (wifi != null) confs.wifi = wifi;
   const fused = fuse(confs);
-  return { ble, wifi, ultrasonic, fused, present: decide(fused) };
-}
-
-/**
- * Owns the 0.5 s WiFi sampler (BLE comes from the 5 s presence tick) so only
- * this panel re-renders — the rest of the console stays at its own cadence.
- */
-function LiveSignalGraph({
-  sensorsRef,
-  lastBleRef,
-  serverUrl,
-  sessionId,
-  deviceId,
-  resetKey,
-  onSample,
-}: {
-  sensorsRef: React.MutableRefObject<NativeSensors | null>;
-  lastBleRef: React.MutableRefObject<number | null>;
-  serverUrl: string;
-  sessionId: string;
-  /** Resolved report identity — null only before the first engage completes. */
-  deviceId: string | null;
-  resetKey: number;
-  onSample?: (wifi: number | null) => void;
-}) {
-  const [samples, setSamples] = useState<SignalSample[]>([]);
-  const busy = useRef(false);
-  const onSampleRef = useRef(onSample);
-  onSampleRef.current = onSample;
-
-  useEffect(() => {
-    setSamples([]);
-    const id = setInterval(async () => {
-      if (busy.current) return;
-      const sensors = sensorsRef.current;
-      if (!sensors) return;
-      busy.current = true;
-      try {
-        const o = await sensors.wifi.observe();
-        const t = Date.now();
-        const wifi = o.connectedToSoshin ? o.soshinRssi : null;
-        const ble = lastBleRef.current;
-        setSamples((prev) => appendSample(prev, { t, ble, wifi }));
-        onSampleRef.current?.(wifi);
-        if (deviceId == null) return;
-        void postTelemetry(serverUrl, sessionId, {
-          deviceId,
-          t,
-          ble,
-          wifi,
-        });
-      } catch {
-        /* the presence loop owns failure reporting */
-      } finally {
-        busy.current = false;
-      }
-    }, 500);
-    return () => clearInterval(id);
-  }, [resetKey, serverUrl, sessionId, sensorsRef, lastBleRef, deviceId]);
-
-  return <SignalGraph samples={samples} />;
+  return { ble, wifi, fused, present: decide(fused) };
 }
 
 function fmtClock(s: number): string {

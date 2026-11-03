@@ -45,8 +45,6 @@
 #include "esp_eap_client.h"
 #endif
 
-#include "driver/ledc.h"
-
 #include "esp_bt.h"
 #include "esp_bt_main.h"
 #include "esp_gap_ble_api.h"
@@ -85,36 +83,16 @@ static esp_netif_t *s_ap_netif = NULL;
  * WPA2-Personal hotspot: set SSID + password.
  * WPA2-Enterprise (802.1X): set STA_ENTERPRISE 1 + STA_USERNAME.
  */
-#define STA_SSID ""
-#define STA_PASSWORD ""
+#define STA_SSID "Shusseki-Room"
+#define STA_PASSWORD "shusseki123"
 #define STA_USERNAME ""
 #define STA_ENTERPRISE 0
 
 #define TOTP_STEP_S 30
 
-/* 1.8/2.6 kHz alternating presence stamp on a GPIO via LEDC (drive a small amp + speaker). */
-#define ENABLE_ULTRASONIC 1
-#define ULTRASONIC_GPIO 25
-
 #ifndef DEV_SEED_EPOCH
 #define DEV_SEED_EPOCH 0
 #endif
-
-/*
- * Alternating two-tone burst cadence (ms/Hz) for the ultrasonic stamp, matching
- * ShussekiUltrasonicModule.kt: 4 bursts of TONE_MS with BURST_GAP_MS between
- * them, then QUIET_MS of silence. Bursts ALTERNATE between STAMP_FREQ_A and
- * STAMP_FREQ_B (A, B, A, B) so a stationary narrowband jammer parked on one
- * frequency can only cover half of the pattern. The receiver aligns on the
- * total pattern length, so the burst task must keep the cycle period steady.
- */
-#define BURST_TONE_MS 120
-#define BURST_COUNT 4
-#define BURST_GAP_MS 220
-#define BURST_QUIET_MS 1000
-#define BURST_PERIOD_MS (BURST_COUNT * BURST_TONE_MS + (BURST_COUNT - 1) * BURST_GAP_MS + BURST_QUIET_MS)
-#define STAMP_FREQ_A 1800
-#define STAMP_FREQ_B 2600
 
 /* Sync-task cadence: announce ~every 50 s, poll presence ~every 25 s. */
 #define ANNOUNCE_PERIOD_MS 50000
@@ -349,7 +327,18 @@ static void config_load_from_nvs(void)
         esp_err_t err = nvs_get_str(h, NVS_KEY_SERVER_URL, s_server_url, &len);
         nvs_close(h);
         if (err == ESP_OK) {
-            ESP_LOGI(TAG, "server URL from NVS: %s", s_server_url);
+            // Never trust a loopback URL from a previous config: on-device it
+            // points at the ESP32 itself, so the sync task spins on TLS errors
+            // and starves BLE advertising. Fall back to the compile-time URL.
+            if (strstr(s_server_url, "127.0.0.1") != NULL ||
+                strstr(s_server_url, "localhost") != NULL ||
+                strstr(s_server_url, "0.0.0.0") != NULL) {
+                ESP_LOGW(TAG, "ignoring loopback server URL from NVS: %s",
+                         s_server_url);
+                snprintf(s_server_url, sizeof(s_server_url), "%s", SERVER_URL);
+            } else {
+                ESP_LOGI(TAG, "server URL from NVS: %s", s_server_url);
+            }
         }
     }
     if (strlen(s_server_url) == 0) {
@@ -728,80 +717,6 @@ static void time_init(void)
     }
 }
 
-/* --------------------------------------------------------------- ultrasonic */
-
-static void ultrasonic_init(void)
-{
-#if ENABLE_ULTRASONIC
-    ledc_timer_config_t t = {
-        .speed_mode = LEDC_LOW_SPEED_MODE,
-        .duty_resolution = LEDC_TIMER_10_BIT,
-        .timer_num = LEDC_TIMER_0,
-        .freq_hz = STAMP_FREQ_A,
-        .clk_cfg = LEDC_AUTO_CLK,
-    };
-    ESP_ERROR_CHECK(ledc_timer_config(&t));
-
-    ledc_channel_config_t c = {
-        .gpio_num = ULTRASONIC_GPIO,
-        .speed_mode = LEDC_LOW_SPEED_MODE,
-        .channel = LEDC_CHANNEL_0,
-        .intr_type = LEDC_INTR_DISABLE,
-        .timer_sel = LEDC_TIMER_0,
-        .duty = 0,
-        .hpoint = 0,
-    };
-    ESP_ERROR_CHECK(ledc_channel_config(&c));
-    ESP_LOGI(TAG, "ultrasonic stamp on GPIO%d @ %d/%d Hz alternating bursts",
-             ULTRASONIC_GPIO, STAMP_FREQ_A, STAMP_FREQ_B);
-#endif
-}
-
-/**
- * 4 x 120 ms tone bursts with 220 ms gaps, alternating between STAMP_FREQ_A
- * and STAMP_FREQ_B (A, B, A, B) — matches ShussekiUltrasonicModule.kt.
- * LEDC retunes the shared timer mid-stream via ledc_set_freq(). Emits exactly
- * one full pattern and returns; the burst task fires it on a steady period so
- * the receiver can align on the pattern length.
- */
-static void ultrasonic_burst(void)
-{
-#if ENABLE_ULTRASONIC
-    static const int burst_freqs[BURST_COUNT] = {STAMP_FREQ_A, STAMP_FREQ_B,
-                                                 STAMP_FREQ_A, STAMP_FREQ_B};
-    for (int i = 0; i < BURST_COUNT; i++) {
-        ESP_ERROR_CHECK(
-            ledc_set_freq(LEDC_LOW_SPEED_MODE, LEDC_TIMER_0, burst_freqs[i]));
-        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 512 /* 50% */);
-        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
-        vTaskDelay(pdMS_TO_TICKS(BURST_TONE_MS));
-        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
-        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
-        if (i < BURST_COUNT - 1) {
-            vTaskDelay(pdMS_TO_TICKS(BURST_GAP_MS));
-        }
-    }
-#endif
-}
-
-/**
- * Dedicated burst task: every cycle is exactly BURST_PERIOD_MS
- * (4 x 120 ms tone + 3 x 220 ms gap + ~1000 ms quiet), independent of any
- * HTTP call in the sync task — the cadence must never slide.
- */
-static void burst_task(void *arg)
-{
-#if ENABLE_ULTRASONIC
-    TickType_t last_wake = xTaskGetTickCount();
-    for (;;) {
-        ultrasonic_burst();
-        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(BURST_PERIOD_MS));
-    }
-#else
-    vTaskDelete(NULL);
-#endif
-}
-
 /* ------------------------------------------------------------------- sync task */
 
 /**
@@ -973,11 +888,9 @@ void app_main(void)
 
     wifi_init();
     time_init();
-    ultrasonic_init();
     bt_init();
     node_api_init();
 
-    xTaskCreate(burst_task, "burst", 4096, NULL, 5, NULL);
     xTaskCreate(sync_task, "sync", 6144, NULL, 5, NULL);
     xTaskCreate(ble_task, "ble", 6144, NULL, 5, NULL);
 }

@@ -36,6 +36,12 @@ export interface DeviceTimeline {
   samples: number;
   /** Present per the most recent sample. */
   present: boolean;
+  /**
+   * True once this device has ever been present in the session. The register
+   * latches on this: attendance is marked once and does not un-mark when the
+   * student walks out (cleared only by an explicit attendance reset).
+   */
+  everPresent?: boolean;
 }
 
 /**
@@ -96,11 +102,15 @@ export function buildAttendance(input: {
 
   const rows: AttendanceRow[] = students.map((s) => {
     const sid = norm(s.studentId);
-    const candidates = timelines.filter(
-      (x) =>
-        (s.deviceId != null && x.deviceId === s.deviceId) ||
-        (sid !== "" && norm(x.studentId) === sid),
-    );
+    const candidates = timelines.filter((x) => {
+      const byStudent = sid !== "" && norm(x.studentId) === sid;
+      if (byStudent) return true;
+      if (s.deviceId == null || x.deviceId !== s.deviceId) return false;
+      // A device can stand in for a student only when it reports that student
+      // (or reports no identity at all). A stale binding must not claim the
+      // same phone for a different roll after a re-enrolment.
+      return norm(x.studentId) === "" || norm(x.studentId) === sid;
+    });
     const t = candidates.length
       ? candidates.reduce((best, x) => {
           if (x.lastSeen > best.lastSeen) return x;
@@ -115,13 +125,14 @@ export function buildAttendance(input: {
     // previous install must not show up as an unrostered intruder.
     for (const c of candidates) used.add(c.deviceId);
 
-    const fresh =
-      t != null && (ttlMs == null || generatedAt - t.lastSeen <= ttlMs);
+    // Attendance is sticky: once a student has been marked present in this
+    // session, leaving the room must not clear the register row.
+    const latched = t?.everPresent ?? (t?.present ?? false);
     return {
       studentId: s.studentId,
       name: s.name,
       deviceId: t?.deviceId ?? s.deviceId ?? null,
-      present: (t?.present ?? false) && fresh,
+      present: latched,
       firstSeen: t?.firstSeen ?? null,
       lastSeen: t?.lastSeen ?? null,
       presentMs: t?.presentMs ?? 0,

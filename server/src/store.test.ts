@@ -64,6 +64,15 @@ test("recordSample caps a long gap so an absence is not credited as present", ()
   expect(s.timelinesForSession("s1")[0]!.presentMs).toBe(0);
 });
 
+test("recordSample latches everPresent once the device is present", () => {
+  const s = new MemoryStore();
+  s.recordSample("s1", "d1", undefined, 0, true);
+  s.recordSample("s1", "d1", undefined, 5_000, false);
+  const t = s.timelinesForSession("s1")[0]!;
+  expect(t.present).toBe(false);
+  expect(t.everPresent).toBe(true);
+});
+
 test("roster is stored and retrievable per session", () => {
   const s = new MemoryStore();
   expect(s.rosterForSession("s1")).toEqual([]);

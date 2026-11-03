@@ -36,13 +36,6 @@ test("Soshin broadcasts a rolling code that verifies against its secret", async 
   });
 });
 
-test("Soshin transmits the code through the ultrasonic adapter", async () => {
-  const sensors = new MockSensors();
-  const soshin = new SoshinController(sensors, soshinConfig);
-  const code = await soshin.broadcast(ALIGNED);
-  expect(sensors.transmittedCodes).toEqual([code]);
-});
-
 test("Soshin start raises the hotspot and stop tears everything down", async () => {
   const sensors = new MockSensors();
   const soshin = new SoshinController(sensors, soshinConfig);
@@ -76,21 +69,15 @@ test("Jushin startAttendance performs a biometric and joins the Soshin WiFi", as
   expect(bio.success).toBe(true);
   expect(sensors.wifiState.connectedToSoshin).toBe(true);
   expect(sensors.started.ble).toBe(true);
-  expect(sensors.started.ultrasonic).toBe(true);
 });
 
-test("Jushin tick gathers all modalities and reports to the server", async () => {
+test("Jushin tick gathers BLE + WiFi and reports to the server", async () => {
   const sensors = new MockSensors();
   sensors.bleReadings = [
     { nodeId: "soshin-1", rssi: -55 },
     { nodeId: "soshin-2", rssi: -72 },
   ];
   sensors.wifiState = { connectedToSoshin: true, soshinRssi: -48, ssid: "Shusseki-1" };
-  sensors.ultrasonicResponse = {
-    received: true,
-    valid: true,
-    code: generateTOTP(SECRET, ALIGNED, { step: 30 }),
-  };
 
   const reporter = new MockReporter();
   const jushin = new JushinController(sensors, jushinConfig, reporter);
@@ -100,7 +87,6 @@ test("Jushin tick gathers all modalities and reports to the server", async () =>
   expect(report.deviceId).toBe("phone-1");
   expect(report.ble?.readings).toHaveLength(2);
   expect(report.wifi?.connectedToSoshin).toBe(true);
-  expect(report.ultrasonic?.received).toBe(true);
   expect(reporter.sent).toHaveLength(1);
   expect(reporter.sent[0]).toBe(report);
 });
@@ -143,20 +129,7 @@ test("Jushin endAttendance performs a biometric and stops sensing", async () => 
   const reporter = new MockReporter();
   const jushin = new JushinController(sensors, jushinConfig, reporter);
   const bio = await jushin.endAttendance();
-  expect(bio.kind).toBe("face");
-});
-
-test("Jushin hears the exact code the Soshin broadcasts", async () => {
-  const sensors = new MockSensors();
-  const soshin = new SoshinController(sensors, soshinConfig);
-  const code = await soshin.broadcast(ALIGNED);
-
-  // Jushin "listens" and receives the transmitted code
-  sensors.ultrasonicResponse = { received: true, valid: true, code };
-  const reporter = new MockReporter();
-  const jushin = new JushinController(sensors, jushinConfig, reporter);
-  const report = await jushin.tick(ALIGNED);
-  expect(report.ultrasonic?.code).toBe(code);
+  expect(bio.kind).toBe("fingerprint");
 });
 
 test("mock reporter can be swapped for an HTTP reporter shape", () => {

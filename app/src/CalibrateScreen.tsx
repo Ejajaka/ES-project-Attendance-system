@@ -20,6 +20,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Text } from "@/components/ui/text";
+import { LiveSignalGraph } from "./components/LiveSignalGraph";
 
 interface CalibrationData {
   sessionId: string;
@@ -72,6 +73,8 @@ export default function CalibrateScreen({
   const [lastSync, setLastSync] = useState<number | null>(null);
   const mounted = useRef(true);
   const ticking = useRef(false);
+  const sensorsRef = useRef<NativeSensors | null>(null);
+  const lastBleRef = useRef<number | null>(null);
   const base = `${settings.serverUrl}/api/sessions/${encodeURIComponent(settings.sessionId)}`;
   const calibratorId = `calibrate-${DEVICE_ID}`;
 
@@ -130,6 +133,7 @@ export default function CalibrateScreen({
   // so run a lightweight Jushin sensing loop (no biometric) in the background.
   useEffect(() => {
     const sensors = new NativeSensors();
+    sensorsRef.current = sensors;
     const reporter = new HttpReporter(settings.serverUrl);
     let stopped = false;
     let interval: ReturnType<typeof setInterval> | null = null;
@@ -150,7 +154,6 @@ export default function CalibrateScreen({
         const pass = announced?.passphrase ?? settings.soshinPass ?? undefined;
         void sensors.wifi.joinSoshin(ssid, pass).catch(() => {});
         await sensors.ble.start("jushin", { roomId: settings.roomId, nodeId: calibratorId });
-        await sensors.ultrasonic.startListener();
 
         const controller = new JushinController(
           sensors,
@@ -168,7 +171,13 @@ export default function CalibrateScreen({
           if (stopped || ticking.current) return;
           ticking.current = true;
           try {
-            await controller.tick(Date.now());
+            const report = await controller.tick(Date.now());
+            const bestBle =
+              report.ble?.readings.reduce<number | null>(
+                (best, r) => (best == null || r.rssi > best ? r.rssi : best),
+                null,
+              ) ?? null;
+            if (bestBle != null) lastBleRef.current = bestBle;
             // Keep the room node's clock pinned once per calibration tick.
             void postNodeTime();
           } catch {
@@ -188,8 +197,8 @@ export default function CalibrateScreen({
     return () => {
       stopped = true;
       if (interval) clearInterval(interval);
+      sensorsRef.current = null;
       void sensors.ble.stop().catch(() => {});
-      void sensors.ultrasonic.stopListener().catch(() => {});
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -325,6 +334,27 @@ export default function CalibrateScreen({
                 no report yet — turn on Bluetooth, join Shusseki-ESP32, wait ~5s
               </Text>
             )}
+          </CardContent>
+        </Card>
+
+        {/* Live signal trace — same view as the receiver */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Live signal trace</CardTitle>
+            <CardDescription numberOfLines={2}>
+              BLE beacon + WiFi AP RSSI over time
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <LiveSignalGraph
+              sensorsRef={sensorsRef}
+              lastBleRef={lastBleRef}
+              serverUrl={settings.serverUrl}
+              sessionId={settings.sessionId}
+              deviceId={null}
+              resetKey={0}
+              height={136}
+            />
           </CardContent>
         </Card>
 

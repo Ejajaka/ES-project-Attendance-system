@@ -46,6 +46,7 @@ class ShussekiBiometricModule : Module() {
     val promptInfo = BiometricPrompt.PromptInfo.Builder()
       .setTitle("Shusseki attendance")
       .setSubtitle("Confirm it is you (${kind})")
+      .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
       .setNegativeButtonText("Cancel")
       .build()
 

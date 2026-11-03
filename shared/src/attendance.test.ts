@@ -116,6 +116,50 @@ describe("buildAttendance", () => {
     expect(absent.rows[0]!.coverage).toBe(0);
   });
 
+  test("a stale device binding cannot claim a re-enrolled student", () => {
+    const sheet = buildAttendance({
+      sessionId: "s",
+      generatedAt: 1,
+      students: [
+        { studentId: "bl.old", name: "Old", deviceId: "phone-1" },
+        { studentId: "bl.new", name: "New" },
+      ],
+      timelines: [
+        timeline({
+          deviceId: "phone-1",
+          studentId: "bl.new",
+          present: true,
+        }),
+      ],
+    });
+    const oldRow = sheet.rows.find((r) => r.studentId === "bl.old")!;
+    const newRow = sheet.rows.find((r) => r.studentId === "bl.new")!;
+    expect(oldRow.present).toBe(false);
+    expect(newRow.present).toBe(true);
+    expect(sheet.presentCount).toBe(1);
+  });
+
+  test("attendance is sticky: once present, leaving does not un-mark it", () => {
+    const sheet = buildAttendance({
+      sessionId: "s",
+      generatedAt: 100_000,
+      ttlMs: 30_000,
+      students: [{ studentId: "bl.1", name: "Ada" }],
+      timelines: [
+        timeline({
+          deviceId: "p",
+          studentId: "bl.1",
+          present: false,
+          presentMs: 5_000,
+          everPresent: true,
+          lastSeen: 10_000,
+        }),
+      ],
+    });
+    expect(sheet.rows[0]!.present).toBe(true);
+    expect(sheet.presentCount).toBe(1);
+  });
+
   test("records devices with no roster entry as unrostered", () => {
     const sheet = buildAttendance({
       sessionId: "s",

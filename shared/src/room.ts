@@ -26,6 +26,9 @@ export const ROOM_EXIT_MS = 30_000;
 
 /** How far below a phone's own best in-room RSSI counts as "outside". */
 export const ROOM_BASELINE_MARGIN_DB = 12;
+/** Calibration boundary = strongest outside reading + this little margin. */
+export const CALIBRATION_OUTSIDE_MARGIN_DB = 3;
+
 /**
  * A baseline only becomes a per-device anchor once the phone has actually
  * reached the calibrated threshold (proof it was inside at least once).
@@ -102,16 +105,11 @@ export function roomPresence(
   const bleInRoom = bestBle != null && bestBle >= bleThreshold;
 
   const connected = report.wifi?.connectedToSoshin ?? false;
-  // Only a real association to the room AP counts. A mere scan of a strong AP
-  // can be seen from far away (through walls) and must not rescue a weak BLE
-  // reading — that was the "walked far but still present" bug.
+  // Threshold-only rule: a scanned room AP counts too (the phone normally
+  // stays on the PC hotspot), so use visibility OR association.
+  const visible = report.wifi?.soshinVisible ?? connected;
   const wifiRssi = report.wifi?.soshinRssi ?? null;
-  const wifiInRoom = connected && wifiRssi != null && wifiRssi >= wifiThreshold;
-
-  // BLE heard anything from the room node? Then BLE decides — weak BLE must
-  // not be rescued by a strong (and long-range) WiFi reading. WiFi only
-  // covers the case where the node was completely inaudible.
-  const heardRoomNode = roomReadings.length > 0;
+  const wifiInRoom = visible && wifiRssi != null && wifiRssi >= wifiThreshold;
 
   return {
     ble: { inRoom: bleInRoom, rssi: bestBle, threshold: bleThreshold },
@@ -121,7 +119,8 @@ export function roomPresence(
       threshold: wifiThreshold,
       connected,
     },
-    inRoom: heardRoomNode ? bleInRoom : wifiInRoom,
+    // Calibrated threshold only: above either channel's boundary = in room.
+    inRoom: bleInRoom || wifiInRoom,
   };
 }
 
@@ -175,25 +174,25 @@ function suggestOne(values: {
   inside: number[];
   outside: number[];
 }): { threshold: number | null; overlap: boolean } {
-  const inside = [...values.inside].sort((a, b) => a - b);
-  const outside = [...values.outside].sort((a, b) => a - b);
-
-  if (inside.length > 0 && outside.length > 0) {
-    // Use robust percentiles (not min/max) so one noisy sample can't wreck it.
-    const insideWorst = percentile(inside, 0.1); // weakest 10% inside
-    const outsideBest = percentile(outside, 0.9); // strongest 10% outside
-    if (insideWorst > outsideBest) {
-      return { threshold: Math.round((insideWorst + outsideBest) / 2), overlap: false };
-    }
-    const insideMed = percentile(inside, 0.5);
-    const outsideMed = percentile(outside, 0.5);
-    return { threshold: Math.round((insideMed + outsideMed) / 2), overlap: true };
+  const insideMin = values.inside.length ? Math.min(...values.inside) : null;
+  // Calibration rule requested for the room: put the boundary a little above
+  // the strongest outside reading (the "lowest signal" that was still outside),
+  // so every calibrated outside point is rejected. No midpoint guessing.
+  if (values.outside.length > 0) {
+    const outsideStrongest = Math.max(...values.outside);
+    const threshold = Math.round(
+      outsideStrongest + CALIBRATION_OUTSIDE_MARGIN_DB,
+    );
+    return {
+      threshold,
+      overlap: insideMin != null && insideMin <= threshold,
+    };
   }
-  if (inside.length > 0) {
-    return { threshold: Math.round(percentile(inside, 0.1) - 3), overlap: false };
-  }
-  if (outside.length > 0) {
-    return { threshold: Math.round(percentile(outside, 0.9) + 3), overlap: false };
+  if (insideMin != null) {
+    return {
+      threshold: Math.round(insideMin - CALIBRATION_OUTSIDE_MARGIN_DB),
+      overlap: false,
+    };
   }
   return { threshold: null, overlap: false };
 }

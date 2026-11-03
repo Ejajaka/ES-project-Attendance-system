@@ -206,19 +206,13 @@ export function createApp(store: Store, sessions: SessionRegistry): Hono {
   const app = new Hono();
 
   /**
-   * Adaptive per-device thresholds: anchor each phone to its own strongest
-   * in-room signal so a weak antenna doesn't read "absent" right next to the
-   * node, while a phone that never got close still uses the calibrated value.
+   * Threshold-only gate: use the calibrated session boundaries directly.
+   * (The old adaptive per-device loosening is removed — the calibration rule
+   * already places the boundary just above the strongest outside reading.)
    */
-  const effectiveOptions = (config: SessionConfig, baseline?: SignalBaseline) => ({
-    bleRssiThreshold: adaptiveThreshold(
-      config.bleRssiThreshold ?? ROOM_BLE_RSSI_THRESHOLD,
-      baseline?.ble ?? null,
-    ),
-    wifiRssiThreshold: adaptiveThreshold(
-      config.wifiRssiThreshold ?? ROOM_WIFI_RSSI_THRESHOLD,
-      baseline?.wifi ?? null,
-    ),
+  const effectiveOptions = (config: SessionConfig, _baseline?: SignalBaseline) => ({
+    bleRssiThreshold: config.bleRssiThreshold ?? ROOM_BLE_RSSI_THRESHOLD,
+    wifiRssiThreshold: config.wifiRssiThreshold ?? ROOM_WIFI_RSSI_THRESHOLD,
   });
 
   app.get("/", (c) =>
@@ -308,15 +302,18 @@ export function createApp(store: Store, sessions: SessionRegistry): Hono {
         deviceId: report.deviceId,
       });
     }
+    // Biometric is recorded for the register but is not compulsory for now.
+    const bioOk = report.biometric == null ? true : report.biometric.success;
+    const credit = dwell.inRoom;
     // Fold this sample into the device's attendance timeline (dwelled verdict).
     store.recordSample(
       report.sessionId,
       report.deviceId,
       report.studentId,
       report.timestamp,
-      dwell.inRoom,
+      credit,
     );
-    return c.json({ presence: { ...presence, present: dwell.inRoom, dwell } });
+    return c.json({ presence: { ...presence, present: credit, bioOk, dwell } });
   });
 
   app.get("/api/sessions/:id/presence", (c) => {
@@ -335,8 +332,9 @@ export function createApp(store: Store, sessions: SessionRegistry): Hono {
       const dwell = store.getDwell(id, r.deviceId);
       const ageMs = now - r.timestamp;
       const fresh = ageMs <= ttl;
+      const bioOk = r.biometric == null ? true : r.biometric.success;
       const inRoom = fresh ? (dwell?.inRoom ?? p.inRoom) : false;
-      return { ...p, present: inRoom, inRoom, ageMs, dwell: dwell ?? null };
+      return { ...p, present: inRoom, inRoom, bioOk, ageMs, dwell: dwell ?? null };
     });
     return c.json({ sessionId: id, devices });
   });

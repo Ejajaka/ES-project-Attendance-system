@@ -59,15 +59,15 @@ describe("roomPresence", () => {
     expect(r.wifi.inRoom).toBe(false);
   });
 
-  test("an unassociated scan of the room AP is not trusted", () => {
+  test("a scanned (unassociated) room AP counts", () => {
     const r = roomPresence({
       wifi: { connectedToSoshin: false, soshinVisible: true, soshinRssi: -50 },
     });
-    expect(r.wifi.inRoom).toBe(false);
-    expect(r.inRoom).toBe(false);
+    expect(r.wifi.inRoom).toBe(true);
+    expect(r.inRoom).toBe(true);
   });
 
-  test("weak BLE is not rescued by strong WiFi when the node was heard", () => {
+  test("either channel above its threshold is in room", () => {
     const r = roomPresence(
       {
         ble: { readings: [{ nodeId: "tx", rssi: -90 }] },
@@ -77,8 +77,7 @@ describe("roomPresence", () => {
     );
     expect(r.ble.inRoom).toBe(false);
     expect(r.wifi.inRoom).toBe(true);
-    // BLE is authoritative once the room node is heard at all.
-    expect(r.inRoom).toBe(false);
+    expect(r.inRoom).toBe(true);
   });
 
   test("WiFi covers gaps where the room node was unheard", () => {
@@ -109,10 +108,10 @@ describe("suggestThresholds", () => {
       { label: "outside", ble: -85, wifi: -75 },
       { label: "outside", ble: -80, wifi: -70 },
     ]);
-    // insideMin -60 vs outsideMax -80 -> midpoint -70
-    expect(s.bleRssiThreshold).toBe(-70);
-    // insideMin -50 vs outsideMax -70 -> midpoint -60
-    expect(s.wifiRssiThreshold).toBe(-60);
+    // outside strongest -80 + 3 dB margin
+    expect(s.bleRssiThreshold).toBe(-77);
+    // outside strongest -70 + 3 dB margin
+    expect(s.wifiRssiThreshold).toBe(-67);
     expect(s.bleOverlap).toBe(false);
     expect(s.wifiOverlap).toBe(false);
     expect(s.insideSamples).toBe(2);

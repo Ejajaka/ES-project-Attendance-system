@@ -2,13 +2,11 @@ import type {
   DeviceSensors,
   BleAdapter,
   WifiAdapter,
-  UltrasonicAdapter,
   BiometricAdapter,
 } from "./sensors";
 import type {
   BleObservation,
   WifiObservation,
-  UltrasonicObservation,
   BiometricCheck,
 } from "shared";
 import {
@@ -26,14 +24,6 @@ import {
   wifiStopHotspot,
   wifiRequestPermissionsAsync,
 } from "expo-shusseki-wifi";
-import {
-  ultraTransmit,
-  ultraListen,
-  ultraStartListener,
-  ultraStopListener,
-  ultraRequestPermissionsAsync,
-  ultraGetPermissionsAsync,
-} from "expo-shusseki-ultrasonic";
 import { bioPerform } from "expo-shusseki-biometric";
 
 /**
@@ -111,40 +101,6 @@ export class NativeSensors implements DeviceSensors {
     },
     stopHotspot: async () => {
       await wifiStopHotspot();
-    },
-  };
-
-  ultrasonic: UltrasonicAdapter = {
-    transmit: async (code: string) => {
-      await ultraTransmit(code);
-    },
-    listen: async (): Promise<UltrasonicObservation> => {
-      try {
-        const o = await ultraListen(3000);
-        return {
-          received: o.received,
-          valid: o.valid,
-          code: o.code,
-          snr: o.snr ?? null,
-          missReason: o.missReason ?? undefined,
-        };
-      } catch (e) {
-        console.warn("[ultrasonic] listen failed:", e);
-        // Closest existing miss-reason: we could not capture audio at all.
-        return { received: false, valid: null, code: null, missReason: "service_killed" };
-      }
-    },
-    startListener: async () => {
-      await ultraStartListener();
-    },
-    stopListener: async () => {
-      await ultraStopListener();
-    },
-    requestPermissions: async () => {
-      return (await ultraRequestPermissionsAsync()).granted;
-    },
-    getPermissions: async () => {
-      return (await ultraGetPermissionsAsync()).granted;
     },
   };
 

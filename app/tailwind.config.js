@@ -1,53 +1,64 @@
 /** @type {import('tailwindcss').Config} */
+const path = require("path");
+
+// Absolute, forward-slash glob: the release bundler's CWD is the monorepo root,
+// and fast-glob does not match Windows backslash paths.
+const contentGlob = path
+  .join(__dirname, "src", "**", "*.{ts,tsx}")
+  .replace(/\\/g, "/");
+
 module.exports = {
-  content: ["./src/**/*.{ts,tsx}"],
+  content: [contentGlob],
   presets: [require("nativewind/preset")],
-  darkMode: "class", // dark-first app; a manual toggle will set/remove the `dark` class
+  darkMode: "class", // dark-first app; the `dark` class is applied in App.tsx
   theme: {
     container: {
       center: true,
       padding: "2rem",
     },
     extend: {
+      // Concrete dark-palette values (the shadcn `.dark` tokens). NativeWind's
+      // native runtime does not reliably resolve `hsl(var(--token))`, which
+      // left the release UI unstyled/white.
       colors: {
-        border: "hsl(var(--border))",
-        input: "hsl(var(--input))",
-        ring: "hsl(var(--ring))",
-        background: "hsl(var(--background))",
-        foreground: "hsl(var(--foreground))",
+        border: "#262626",
+        input: "#262626",
+        ring: "#d4d4d4",
+        background: "#0a0a0a",
+        foreground: "#fafafa",
         primary: {
-          DEFAULT: "hsl(var(--primary))",
-          foreground: "hsl(var(--primary-foreground))",
+          DEFAULT: "#fafafa",
+          foreground: "#171717",
         },
         secondary: {
-          DEFAULT: "hsl(var(--secondary))",
-          foreground: "hsl(var(--secondary-foreground))",
+          DEFAULT: "#262626",
+          foreground: "#fafafa",
         },
         destructive: {
-          DEFAULT: "hsl(var(--destructive))",
-          foreground: "hsl(var(--destructive-foreground))",
+          DEFAULT: "#7f1d1d",
+          foreground: "#fafafa",
         },
         muted: {
-          DEFAULT: "hsl(var(--muted))",
-          foreground: "hsl(var(--muted-foreground))",
+          DEFAULT: "#262626",
+          foreground: "#a3a3a3",
         },
         accent: {
-          DEFAULT: "hsl(var(--accent))",
-          foreground: "hsl(var(--accent-foreground))",
+          DEFAULT: "#262626",
+          foreground: "#fafafa",
         },
         popover: {
-          DEFAULT: "hsl(var(--popover))",
-          foreground: "hsl(var(--popover-foreground))",
+          DEFAULT: "#0a0a0a",
+          foreground: "#fafafa",
         },
         card: {
-          DEFAULT: "hsl(var(--card))",
-          foreground: "hsl(var(--card-foreground))",
+          DEFAULT: "#0a0a0a",
+          foreground: "#fafafa",
         },
       },
       borderRadius: {
-        lg: "var(--radius)",
-        md: "calc(var(--radius) - 2px)",
-        sm: "calc(var(--radius) - 4px)",
+        lg: "0.5rem",
+        md: "0.375rem",
+        sm: "0.25rem",
       },
     },
   },

@@ -95,11 +95,8 @@ export class E2eController {
     // Native requestPermissionsAsync hangs on some real devices when the
     // permission controller isn't wired; permissions are pre-granted via adb
     // pm grant in the runbook anyway, so check (not prompt) instead.
-    const [b, u] = await Promise.all([
-      this.sensors.ble.getPermissions?.() ?? Promise.resolve(true),
-      this.sensors.ultrasonic.getPermissions?.() ?? Promise.resolve(true),
-    ]);
-    this.log(`[e2e] perms ble=${b} ultrasonic=${u}`);
+    const b = await (this.sensors.ble.getPermissions?.() ?? Promise.resolve(true));
+    this.log(`[e2e] perms ble=${b}`);
   }
 
   private async soshin(): Promise<void> {
@@ -123,7 +120,6 @@ export class E2eController {
     const sent: string[] = [];
     for (let i = 0; i < BROADCAST_COUNT; i++) {
       const code = generateTOTP(this.secretBytes, Date.now());
-      await this.sensors.ultrasonic.transmit(code);
       sent.push(code);
       await this.report(role, "transmit", { code, i });
       if (i < BROADCAST_COUNT - 1) await sleep(BROADCAST_INTERVAL_MS);
@@ -165,20 +161,9 @@ export class E2eController {
       this.log(`[e2e:jushin] found Soshin node ${found.nodeId} @ ${found.rssi} dBm`);
     }
 
-    // 2. Listen for the ultrasonic presence stamp across the broadcast window.
-    const listenUntil = Date.now() + LISTEN_TOTAL_MS;
-    let presenceHits = 0;
-    while (Date.now() < listenUntil) {
-      const u = await this.sensors.ultrasonic.listen();
-      if (u.received) {
-        presenceHits++;
-        await this.report(role, "ultrasonic_present", { snr: u.snr, miss: u.missReason });
-      } else {
-        await this.report(role, "ultrasonic_window", { received: false, miss: u.missReason });
-      }
-      // Prove the ingest pipeline too: report this device's presence.
-      await this.sendJushinReport(found);
-    }
+    // 2. Acoustic presence has been removed; just prove the ingest pipeline.
+    const presenceHits = 0;
+    await this.sendJushinReport(found);
 
     await this.report(role, "done", { presenceHits });
     this.log(`[e2e:jushin] done, detected presence in ${presenceHits} windows`);
@@ -194,7 +179,6 @@ export class E2eController {
       timestamp: Date.now(),
       ble: found ? { readings: [found] } : undefined,
       wifi,
-      ultrasonic: { received: false, valid: null, code: null },
     };
     try {
       const res = await fetch(`${this.config.serverUrl}/api/reports`, {

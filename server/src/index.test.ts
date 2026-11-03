@@ -249,6 +249,52 @@ test("a report with studentId auto-enrolls the roster", async () => {
   ]);
 });
 
+test("a failed biometric does not block attendance (relaxed)", async () => {
+  const app = makeApp();
+  await app.request("/api/sessions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      sessionId: "s1",
+      roomId: "r1",
+      secret: SECRET_B64,
+      roomNodeId: "tx",
+      ttlMs: 60_000,
+      enterMs: 0,
+      exitMs: 0,
+    }),
+  });
+  const code = generateTOTP(SECRET, ALIGNED, { step: 30 });
+  const base = reportPayload(code);
+  const report = (bioSuccess: boolean) =>
+    app.request("/api/reports", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        ...base,
+        deviceId: "phone-bio",
+        studentId: "bl.1",
+        studentName: "Ada",
+        ble: { readings: [{ nodeId: "tx", rssi: -50 }] },
+        wifi: undefined,
+        ultrasonic: undefined,
+        biometric: {
+          performedAt: ALIGNED,
+          kind: "fingerprint",
+          success: bioSuccess,
+        },
+      }),
+    });
+
+  await report(false);
+  const failed = await (await app.request("/api/sessions/s1/attendance")).json();
+  expect(failed.presentCount).toBe(1);
+
+  await report(true);
+  const passed = await (await app.request("/api/sessions/s1/attendance")).json();
+  expect(passed.presentCount).toBe(1);
+});
+
 test("room feature: only the room node's BLE counts; corridor is out", async () => {
   const app = makeApp();
   await app.request("/api/sessions", {
@@ -346,60 +392,20 @@ test("calibration: suggests thresholds from inside/outside samples and applies t
   });
 
   const cal = await (await app.request("/api/sessions/s1/calibrate")).json();
-  expect(cal.suggestion.bleRssiThreshold).toBe(-70);
+  expect(cal.suggestion.bleRssiThreshold).toBe(-82);
 
   const apply = await app.request("/api/sessions/s1/calibrate/apply", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: "{}",
   });
-  expect((await apply.json()).applied.bleRssiThreshold).toBe(-70);
+  expect((await apply.json()).applied.bleRssiThreshold).toBe(-82);
 
-  // With the applied threshold (-70 dBm), -75 is outside and -65 is inside.
-  const outside = await (await report("probe-a", -75)).json();
+  // With the applied threshold (-82 dBm), -90 is outside and -78 is inside.
+  const outside = await (await report("probe-a", -90)).json();
   expect(outside.presence.room.ble.inRoom).toBe(false);
-  const inside = await (await report("probe-b", -65)).json();
+  const inside = await (await report("probe-b", -78)).json();
   expect(inside.presence.room.ble.inRoom).toBe(true);
-});
-
-test("adaptive baseline keeps a weak phone present once it has been close", async () => {
-  const app = makeApp();
-  await app.request("/api/sessions", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      sessionId: "s1",
-      roomId: "r1",
-      secret: SECRET_B64,
-      roomNodeId: "tx",
-      ttlMs: 60_000,
-      enterMs: 0,
-      exitMs: 0,
-    }),
-  });
-  const code = generateTOTP(SECRET, ALIGNED, { step: 30 });
-  const base = reportPayload(code);
-  const report = (deviceId: string, rssi: number) =>
-    app.request("/api/reports", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        ...base,
-        deviceId,
-        ble: { readings: [{ nodeId: "tx", rssi }] },
-        wifi: undefined,
-        ultrasonic: undefined,
-      }),
-    });
-
-  // A phone that never reaches the -70 dBm threshold stays out.
-  const far = await (await report("phone-far", -82)).json();
-  expect(far.presence.room.ble.inRoom).toBe(false);
-
-  // Once a phone hits the threshold, its own anchor allows a margin of drop.
-  await report("phone-weak", -70);
-  const weak = await (await report("phone-weak", -80)).json();
-  expect(weak.presence.room.ble.inRoom).toBe(true);
 });
 
 test("attendance reset clears timelines but keeps the roster", async () => {

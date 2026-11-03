@@ -5,9 +5,9 @@ import { RssiSmoother } from "../rssiSmoother";
 import { postNodeTime } from "../server";
 
 /**
- * Jushin (phone-side) controller. Connects to the Soshin WiFi, listens only for
- * the ultrasonic rolling code, reports BLE + WiFi signal, and performs an
- * on-device biometric check at attendance boundaries.
+ * Jushin (phone-side) controller. Joins the room network and reports BLE + WiFi
+ * signal; the room gate is threshold-only over those two channels. Acoustic
+ * sensing has been removed.
  */
 export interface JushinConfig {
   deviceId: string;
@@ -76,7 +76,9 @@ export class JushinController {
       return await Promise.race([
         this.sensors.biometric.perform(kind),
         new Promise<BiometricCheck>((resolve) =>
-          setTimeout(() => resolve(failed("unavailable/timeout")), 4000),
+          // Must be longer than a human finger press: the old 4 s window
+          // resolved "timeout" while the prompt was still waiting.
+          setTimeout(() => resolve(failed("unavailable/timeout")), 35000),
         ),
       ]);
     } catch (e) {
@@ -96,16 +98,14 @@ export class JushinController {
       roomId: this.config.roomId,
       nodeId: this.config.deviceId,
     });
-    await this.sensors.ultrasonic.startListener();
     return this.startBio;
   }
 
-  /** One sensing cycle: gather all modalities and report to the server. */
+  /** One sensing cycle: gather BLE + WiFi and report to the server. */
   async tick(now: number): Promise<DeviceReport> {
-    const [bleRaw, wifiRaw, ultrasonic] = await Promise.all([
+    const [bleRaw, wifiRaw] = await Promise.all([
       this.sensors.ble.observe(),
       this.sensors.wifi.observe(),
-      this.sensors.ultrasonic.listen(),
     ]);
 
     // Deduplicate repeated advertisements from the same node (keep the
@@ -132,19 +132,6 @@ export class JushinController {
         ? wifiRaw
         : { ...wifiRaw, soshinRssi: this.wifiSmoother.push(wifiRaw.soshinRssi) };
 
-    // Code-over-BLE: the rolling code arrives via the Soshin's BLE
-    // advertisement (reliable channel). Keep it for anti-spoof verification,
-    // but `received` must be the REAL acoustic detection so a phone that is
-    // out of earshot isn't scored as if it heard the room's tone.
-    const bleCode = ble.readings.find((r) => r.code)?.code;
-    const ultrasonicReport = {
-      received: ultrasonic.received,
-      valid: ultrasonic.received && bleCode ? true : null,
-      code: bleCode ?? ultrasonic.code ?? null,
-      snr: ultrasonic.snr,
-      missReason: ultrasonic.missReason,
-    };
-
     const report: DeviceReport = {
       deviceId: this.config.deviceId,
       studentId: this.config.studentId || undefined,
@@ -155,7 +142,6 @@ export class JushinController {
       timestamp: now,
       ble,
       wifi,
-      ultrasonic: ultrasonicReport,
       biometric: this.startBio ?? undefined,
     };
 
@@ -185,9 +171,8 @@ export class JushinController {
 
   /** Biometric at end of attendance, then stop sensing. */
   async endAttendance(): Promise<BiometricCheck> {
-    this.endBio = await this.safeBio("face");
+    this.endBio = await this.safeBio("fingerprint");
     await this.sensors.ble.stop();
-    await this.sensors.ultrasonic.stopListener();
     return this.endBio;
   }
 }
