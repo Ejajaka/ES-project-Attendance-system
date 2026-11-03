@@ -53,7 +53,7 @@ const TICK_MS = 5000;
  * Fingerprint is optional for now (the single-finger restriction is not
  * enforceable on a phone). Set to true to require it again.
  */
-const BIOMETRIC_REQUIRED = false;
+const BIOMETRIC_REQUIRED = true;
 
 function fmtTime(t: number): string {
   return new Date(t).toLocaleTimeString();
@@ -146,6 +146,35 @@ export default function JushinScreen({
       setEnrollMsg("Enter both roll number and name.");
       return;
     }
+    setEnrollMsg("Waiting for your fingerprint…");
+    const sensors = new NativeSensors();
+    let bio: BiometricCheck;
+    try {
+      bio = await Promise.race([
+        sensors.biometric.perform("fingerprint"),
+        new Promise<BiometricCheck>((resolve) =>
+          setTimeout(
+            () =>
+              resolve({
+                performedAt: Date.now(),
+                kind: "fingerprint",
+                success: false,
+                reason: "timeout",
+              }),
+            35000,
+          ),
+        ),
+      ]);
+    } catch (e) {
+      setEnrollMsg(
+        `Fingerprint failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+      return;
+    }
+    if (!bio.success) {
+      setEnrollMsg(`Fingerprint failed: ${bio.reason ?? "try again"}`);
+      return;
+    }
     const next = { studentId, studentName, enrolledAt: Date.now() };
     try {
       await saveIdentity(next);
@@ -154,6 +183,8 @@ export default function JushinScreen({
       return;
     }
     setIdentity(next);
+    setBio(`${bio.kind} (ok)`);
+    setBioOk(true);
     setEnrollMsg(null);
   };
 
@@ -179,6 +210,11 @@ export default function JushinScreen({
   const start = async () => {
     setError(null);
     setEvent(null);
+    if (!identity && !bioSkip) {
+      setError("Enroll your fingerprint first.");
+      setEnrollMsg("Save your roll, name and fingerprint before starting.");
+      return;
+    }
     try {
       const ok = await ensureSession(serverUrl, {
         sessionId: settings.sessionId,
@@ -227,6 +263,14 @@ export default function JushinScreen({
           : `${b.kind} (${b.success ? "ok" : `failed: ${b.reason ?? "unknown"}`})`,
       );
       setBioOk(skipped ? null : b.success);
+      if (!b.success && !bioSkip) {
+        setError("Fingerprint failed — attendance not started.");
+        setEvent({
+          text: "BIOMETRIC FAILED · attendance not marked",
+          kind: "bad",
+        });
+        return;
+      }
       controllerRef.current = controller;
       setRunning(true);
       setStartedAt(Date.now());
@@ -396,8 +440,9 @@ export default function JushinScreen({
               <CardHeader>
                 <CardTitle>Enroll this phone</CardTitle>
                 <CardDescription>
-                  Enter your roll and name once. It is saved on this device and
-                  reused for every engagement.
+                  Enter your roll and name once, then confirm with this phone's
+                  fingerprint. It is saved on this device; every engagement
+                  requires that fingerprint.
                 </CardDescription>
               </CardHeader>
               <CardContent className="gap-3">
@@ -419,7 +464,7 @@ export default function JushinScreen({
                   <Text className="text-sm text-destructive">{enrollMsg}</Text>
                 ) : null}
                 <Button onPress={() => void enroll()}>
-                  <Text>Save identity</Text>
+                  <Text>Save &amp; verify fingerprint</Text>
                 </Button>
               </CardContent>
             </Card>
@@ -632,7 +677,11 @@ export default function JushinScreen({
                   <Text>Stop attendance</Text>
                 </Button>
               ) : (
-                <Button className="flex-1" onPress={start}>
+                <Button
+                  className="flex-1"
+                  disabled={!identity && !bioSkip}
+                  onPress={start}
+                >
                   <Text>Start attendance</Text>
                 </Button>
               )}

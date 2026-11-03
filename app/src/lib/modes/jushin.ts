@@ -89,6 +89,11 @@ export class JushinController {
   /** Biometric at start of attendance, then join the room network + start sensing. */
   async startAttendance(): Promise<BiometricCheck> {
     this.startBio = await this.safeBio("fingerprint");
+    // Attendance is biometric-gated: a failed check means do not sense/report
+    // at all (headless runs opt out explicitly via bioMode="skip").
+    if (!this.startBio.success && this.config.bioMode !== "skip") {
+      return this.startBio;
+    }
     // Fire-and-forget the network join: Android's WiFi-consent flow
     // (WifiNetworkSpecifier) can hang, and it must never stall the sensing loop.
     void this.sensors.wifi

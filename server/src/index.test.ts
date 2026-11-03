@@ -249,7 +249,7 @@ test("a report with studentId auto-enrolls the roster", async () => {
   ]);
 });
 
-test("a failed biometric does not block attendance (relaxed)", async () => {
+test("a failed biometric blocks attendance even while in the room", async () => {
   const app = makeApp();
   await app.request("/api/sessions", {
     method: "POST",
@@ -288,7 +288,7 @@ test("a failed biometric does not block attendance (relaxed)", async () => {
 
   await report(false);
   const failed = await (await app.request("/api/sessions/s1/attendance")).json();
-  expect(failed.presentCount).toBe(1);
+  expect(failed.presentCount).toBe(0);
 
   await report(true);
   const passed = await (await app.request("/api/sessions/s1/attendance")).json();

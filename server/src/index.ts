@@ -302,9 +302,10 @@ export function createApp(store: Store, sessions: SessionRegistry): Hono {
         deviceId: report.deviceId,
       });
     }
-    // Biometric is recorded for the register but is not compulsory for now.
+    // Biometric is the attendance gate: a failed check is not present even if
+    // the phone is in the room. (No biometric reported = legacy/headless.)
     const bioOk = report.biometric == null ? true : report.biometric.success;
-    const credit = dwell.inRoom;
+    const credit = dwell.inRoom && bioOk;
     // Fold this sample into the device's attendance timeline (dwelled verdict).
     store.recordSample(
       report.sessionId,
@@ -333,7 +334,7 @@ export function createApp(store: Store, sessions: SessionRegistry): Hono {
       const ageMs = now - r.timestamp;
       const fresh = ageMs <= ttl;
       const bioOk = r.biometric == null ? true : r.biometric.success;
-      const inRoom = fresh ? (dwell?.inRoom ?? p.inRoom) : false;
+      const inRoom = fresh && bioOk ? (dwell?.inRoom ?? p.inRoom) : false;
       return { ...p, present: inRoom, inRoom, bioOk, ageMs, dwell: dwell ?? null };
     });
     return c.json({ sessionId: id, devices });
