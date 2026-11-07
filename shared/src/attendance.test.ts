@@ -139,7 +139,28 @@ describe("buildAttendance", () => {
     expect(sheet.presentCount).toBe(1);
   });
 
-  test("attendance is sticky: once present, leaving does not un-mark it", () => {
+  test("attendance is sticky while the device keeps reporting", () => {
+    const sheet = buildAttendance({
+      sessionId: "s",
+      generatedAt: 100_000,
+      ttlMs: 30_000,
+      students: [{ studentId: "bl.1", name: "Ada" }],
+      timelines: [
+        timeline({
+          deviceId: "p",
+          studentId: "bl.1",
+          present: false,
+          presentMs: 5_000,
+          everPresent: true,
+          lastSeen: 95_000,
+        }),
+      ],
+    });
+    expect(sheet.rows[0]!.present).toBe(true);
+    expect(sheet.presentCount).toBe(1);
+  });
+
+  test("a stale device does not leave a phantom present row", () => {
     const sheet = buildAttendance({
       sessionId: "s",
       generatedAt: 100_000,
@@ -156,8 +177,8 @@ describe("buildAttendance", () => {
         }),
       ],
     });
-    expect(sheet.rows[0]!.present).toBe(true);
-    expect(sheet.presentCount).toBe(1);
+    expect(sheet.rows[0]!.present).toBe(false);
+    expect(sheet.presentCount).toBe(0);
   });
 
   test("records devices with no roster entry as unrostered", () => {

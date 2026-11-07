@@ -125,14 +125,18 @@ export function buildAttendance(input: {
     // previous install must not show up as an unrostered intruder.
     for (const c of candidates) used.add(c.deviceId);
 
-    // Attendance is sticky: once a student has been marked present in this
-    // session, leaving the room must not clear the register row.
+    // Attendance is sticky while the device is actively reporting: a phone
+    // that walks out keeps its row present (it keeps sending present=false),
+    // but a device that stopped reporting (attendance not started/ended) must
+    // not leave a phantom "present" behind.
     const latched = t?.everPresent ?? (t?.present ?? false);
+    const fresh =
+      t != null && (ttlMs == null || generatedAt - t.lastSeen <= ttlMs);
     return {
       studentId: s.studentId,
       name: s.name,
       deviceId: t?.deviceId ?? s.deviceId ?? null,
-      present: latched,
+      present: latched && fresh,
       firstSeen: t?.firstSeen ?? null,
       lastSeen: t?.lastSeen ?? null,
       presentMs: t?.presentMs ?? 0,
