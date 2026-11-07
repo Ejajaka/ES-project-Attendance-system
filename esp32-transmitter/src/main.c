@@ -96,10 +96,12 @@ static esp_netif_t *s_ap_netif = NULL;
 /** Green LED: on when the STA is connected to the classroom Wi-Fi. */
 #define LED_GPIO 25
 /** How often the LCD refreshes the live attendance count from the server. */
-#define ATTENDANCE_PERIOD_MS 5000
+#define ATTENDANCE_PERIOD_MS 2000
 
 /** Set when the STA gets an IP so the LCD refreshes immediately. */
 static volatile bool s_attendance_now = false;
+/** STA link state, shown on LCD line 2. */
+static volatile bool s_wifi_up = false;
 
 #ifndef DEV_SEED_EPOCH
 #define DEV_SEED_EPOCH 0
@@ -407,7 +409,7 @@ static int http_get_text(const char *path, char *out, size_t outsz)
 
 /**
  * LCD: live register count from the fusion server.
- * Line 1 "Present: X", line 2 "Total: Y" (X/Y from /attendance).
+ * Line 1 "Present: X" (live); line 2 is the connected Wi-Fi SSID.
  */
 static void refresh_attendance_lcd(void)
 {
@@ -417,6 +419,7 @@ static void refresh_attendance_lcd(void)
                                body, sizeof(body));
     if (status != 200) {
         lcd_print(0, "No server");
+        lcd_print(1, s_wifi_up ? STA_SSID : "No WiFi");
         ESP_LOGW(TAG, "[lcd] attendance fetch status=%d", status);
         return;
     }
@@ -433,8 +436,9 @@ static void refresh_attendance_lcd(void)
     }
 
     char line0[17];
-    snprintf(line0, sizeof(line0), "Present %d/%d", present, roster);
+    snprintf(line0, sizeof(line0), "Present: %d", present);
     lcd_print(0, line0);
+    lcd_print(1, s_wifi_up ? STA_SSID : "No WiFi");
     ESP_LOGI(TAG, "[lcd] attendance %d/%d", present, roster);
 }
 
@@ -747,11 +751,14 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id,
         wifi_event_sta_disconnected_t *e = (wifi_event_sta_disconnected_t *)data;
         ESP_LOGW(TAG, "STA disconnected, reason=%d — retrying", e->reason);
         led_set(false);
+        s_wifi_up = false;
+        s_attendance_now = true;
         esp_wifi_connect();
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *e = (ip_event_got_ip_t *)data;
         ESP_LOGI(TAG, "STA got IP " IPSTR, IP2STR(&e->ip_info.ip));
         led_set(true);
+        s_wifi_up = true;
         s_attendance_now = true;
         // Route SoftAP clients out through the STA network (reaches the server).
         if (s_ap_netif && esp_netif_napt_enable(s_ap_netif) == ESP_OK) {
@@ -816,18 +823,28 @@ static void wifi_init(void)
     ESP_ERROR_CHECK(esp_wifi_start());
 }
 
+static void sntp_sync_cb(struct timeval *tv)
+{
+    ESP_LOGI(TAG, "SNTP synced: unix=%ld", (long)tv->tv_sec);
+}
+
 static void time_init(void)
 {
+    /* The LCD clock shows local IST; TOTP keeps using UTC internally. */
+    setenv("TZ", "IST-5:30", 1);
+    tzset();
+
     bool synced = false;
     if (strlen(STA_SSID) > 0) {
         esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+        cfg.sync_cb = sntp_sync_cb;
         esp_netif_sntp_init(&cfg);
         ESP_LOGI(TAG, "waiting for SNTP...");
-        if (esp_netif_sntp_sync_wait(pdMS_TO_TICKS(10000)) == ESP_OK) {
+        if (esp_netif_sntp_sync_wait(pdMS_TO_TICKS(2000)) == ESP_OK) {
             synced = true;
             ESP_LOGI(TAG, "SNTP synced");
         } else {
-            ESP_LOGW(TAG, "SNTP did not sync in time");
+            ESP_LOGW(TAG, "SNTP not synced in 2s; will keep trying in background");
         }
     }
     if (!synced) {
@@ -929,7 +946,6 @@ static void sync_task(void *arg)
     TickType_t last_poll = xTaskGetTickCount();
     TickType_t last_attendance =
         xTaskGetTickCount() - pdMS_TO_TICKS(ATTENDANCE_PERIOD_MS);
-    int last_clock_sec = -1;
     bool announce_backoff = false;
     bool server_configured = strlen(s_server_url) > 0;
 
@@ -979,19 +995,6 @@ static void sync_task(void *arg)
             if (configured) {
                 refresh_attendance_lcd();
             }
-        }
-
-        /* Always show the clock on LCD line 2 (NTP time, or build-epoch fallback). */
-        time_t now_t = time(NULL);
-        struct tm tmv;
-        localtime_r(&now_t, &tmv);
-        if (tmv.tm_sec != last_clock_sec) {
-            last_clock_sec = tmv.tm_sec;
-            char tbuf[17];
-            snprintf(tbuf, sizeof(tbuf), "Time %02d:%02d:%02d", tmv.tm_hour,
-                     tmv.tm_min, tmv.tm_sec);
-            lcd_tick_recover();
-            lcd_print(1, tbuf);
         }
 
         vTaskDelay(pdMS_TO_TICKS(1000));
@@ -1047,7 +1050,7 @@ void app_main(void)
     // Show the LCD immediately at boot — it must not wait for WiFi/SNTP.
     if (lcd_init()) {
         lcd_print(0, "Shusseki");
-        lcd_print(1, "starting...");
+        lcd_print(1, STA_SSID);
     }
 
     wifi_init();

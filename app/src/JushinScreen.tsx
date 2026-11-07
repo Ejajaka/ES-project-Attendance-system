@@ -139,6 +139,44 @@ export default function JushinScreen({
     });
   }, []);
 
+  // Live signal preview: keep the BLE/WiFi trace running even before ENGAGE.
+  // WiFi is sampled by LiveSignalGraph (0.5 s); BLE is scanned here while idle.
+  useEffect(() => {
+    if (!sensorsRef.current) {
+      sensorsRef.current = new NativeSensors();
+    }
+    if (running) return; // the attendance tick owns BLE scanning while running
+
+    const sensors = sensorsRef.current;
+    let cancelled = false;
+    let busy = false;
+    const poll = async () => {
+      if (cancelled || busy) return;
+      busy = true;
+      try {
+        const o = await sensors.ble.observe();
+        const best = o.readings.reduce<number | null>(
+          (b, r) => (b == null || r.rssi > b ? r.rssi : b),
+          null,
+        );
+        if (best != null) {
+          lastBleRef.current = best;
+          bleAtRef.current = Date.now();
+        }
+      } catch {
+        /* preview scan is best-effort */
+      } finally {
+        busy = false;
+      }
+    };
+    void poll();
+    const id = setInterval(poll, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [running]);
+
   const enroll = async () => {
     const studentId = enrollId.trim();
     const studentName = enrollName.trim();
@@ -240,7 +278,8 @@ export default function JushinScreen({
       const persistentDeviceId = await loadPersistentDeviceId();
       setDeviceId(persistentDeviceId);
 
-      const sensors = new NativeSensors();
+      const sensors = sensorsRef.current ?? new NativeSensors();
+      sensorsRef.current = sensors;
       const reporter = new HttpReporter(serverUrl);
       const config: JushinConfig = {
         deviceId: persistentDeviceId,
