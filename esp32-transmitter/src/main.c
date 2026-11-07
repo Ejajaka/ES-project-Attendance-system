@@ -41,6 +41,7 @@
 #include "esp_http_server.h"
 #include "nvs.h"
 #include "nvs_flash.h"
+#include "driver/gpio.h"
 #if CONFIG_ESP_WIFI_ENTERPRISE_SUPPORT
 #include "esp_eap_client.h"
 #endif
@@ -48,6 +49,8 @@
 #include "esp_bt.h"
 #include "esp_bt_main.h"
 #include "esp_gap_ble_api.h"
+
+#include "lcd.h"
 
 static const char *TAG = "shusseki-tx";
 
@@ -90,6 +93,14 @@ static esp_netif_t *s_ap_netif = NULL;
 
 #define TOTP_STEP_S 30
 
+/** Green LED: on when the STA is connected to the classroom Wi-Fi. */
+#define LED_GPIO 25
+/** How often the LCD refreshes the live attendance count from the server. */
+#define ATTENDANCE_PERIOD_MS 5000
+
+/** Set when the STA gets an IP so the LCD refreshes immediately. */
+static volatile bool s_attendance_now = false;
+
 #ifndef DEV_SEED_EPOCH
 #define DEV_SEED_EPOCH 0
 #endif
@@ -107,6 +118,45 @@ static esp_netif_t *s_ap_netif = NULL;
  * rewind the clock.
  */
 #define CLOCK_SYNC_TOL_S 90
+
+/* --------------------------------------------------------------------- LED */
+
+static bool s_led_on = false;
+
+static void led_init(void)
+{
+    gpio_config_t io = {
+        .pin_bit_mask = 1ULL << LED_GPIO,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&io);
+    gpio_set_level(LED_GPIO, 0);
+    s_led_on = false;
+
+    /* Visible self-test: three quick blinks at boot. */
+    for (int i = 0; i < 3; i++) {
+        gpio_set_level(LED_GPIO, 1);
+        vTaskDelay(pdMS_TO_TICKS(200));
+        gpio_set_level(LED_GPIO, 0);
+        vTaskDelay(pdMS_TO_TICKS(200));
+    }
+    ESP_LOGI(TAG, "LED boot test: 3 blinks on GPIO%d (active-high)", LED_GPIO);
+}
+
+/** Green LED = Wi-Fi link state (ON only once the STA has an IP). */
+static void led_set(bool on)
+{
+    if (on == s_led_on) {
+        return;
+    }
+    s_led_on = on;
+    gpio_set_level(LED_GPIO, on ? 1 : 0);
+    ESP_LOGI(TAG, "LED %s (wifi %s)", on ? "ON" : "OFF",
+             on ? "connected" : "down");
+}
 
 /* --------------------------------------------------------------------- TOTP */
 
@@ -314,6 +364,78 @@ static int http_post_json(const char *path, const char *body)
     int status = (err == ESP_OK) ? esp_http_client_get_status_code(c) : -1;
     esp_http_client_cleanup(c);
     return status;
+}
+
+/** GET a path and copy the body into `out` (NUL-terminated). Returns status. */
+static int http_get_text(const char *path, char *out, size_t outsz)
+{
+    out[0] = '\0';
+    if (strlen(s_server_url) == 0 || outsz < 2) {
+        return 0;
+    }
+    char url[256];
+    snprintf(url, sizeof(url), "%s%s", s_server_url, path);
+
+    esp_http_client_config_t cfg = {
+        .url = url,
+        .method = HTTP_METHOD_GET,
+        .timeout_ms = 2500,
+    };
+    esp_http_client_handle_t c = esp_http_client_init(&cfg);
+    if (!c) {
+        return -1;
+    }
+    int status = -1;
+    size_t total = 0;
+    if (esp_http_client_open(c, 0) == ESP_OK) {
+        esp_http_client_fetch_headers(c);
+        int n;
+        while ((n = esp_http_client_read(c, out + total,
+                                         (int)(outsz - 1 - total))) > 0) {
+            total += (size_t)n;
+            if (total >= outsz - 1) {
+                break;
+            }
+        }
+        status = esp_http_client_get_status_code(c);
+        esp_http_client_close(c);
+    }
+    out[total] = '\0';
+    esp_http_client_cleanup(c);
+    return status;
+}
+
+/**
+ * LCD: live register count from the fusion server.
+ * Line 1 "Present: X", line 2 "Total: Y" (X/Y from /attendance).
+ */
+static void refresh_attendance_lcd(void)
+{
+    lcd_tick_recover();
+    char body[2048];
+    int status = http_get_text("/api/sessions/" PRESET_SESSION_ID "/attendance",
+                               body, sizeof(body));
+    if (status != 200) {
+        lcd_print(0, "No server");
+        ESP_LOGW(TAG, "[lcd] attendance fetch status=%d", status);
+        return;
+    }
+
+    int present = 0;
+    int roster = 0;
+    const char *p = strstr(body, "\"presentCount\":");
+    if (p) {
+        present = atoi(p + strlen("\"presentCount\":"));
+    }
+    p = strstr(body, "\"rosterCount\":");
+    if (p) {
+        roster = atoi(p + strlen("\"rosterCount\":"));
+    }
+
+    char line0[17];
+    snprintf(line0, sizeof(line0), "Present %d/%d", present, roster);
+    lcd_print(0, line0);
+    ESP_LOGI(TAG, "[lcd] attendance %d/%d", present, roster);
 }
 
 /* --------------------------------------------------------------------- NVS */
@@ -624,10 +746,13 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id,
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         wifi_event_sta_disconnected_t *e = (wifi_event_sta_disconnected_t *)data;
         ESP_LOGW(TAG, "STA disconnected, reason=%d — retrying", e->reason);
+        led_set(false);
         esp_wifi_connect();
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *e = (ip_event_got_ip_t *)data;
         ESP_LOGI(TAG, "STA got IP " IPSTR, IP2STR(&e->ip_info.ip));
+        led_set(true);
+        s_attendance_now = true;
         // Route SoftAP clients out through the STA network (reaches the server).
         if (s_ap_netif && esp_netif_napt_enable(s_ap_netif) == ESP_OK) {
             ESP_LOGI(TAG, "NAPT enabled on SoftAP");
@@ -698,7 +823,7 @@ static void time_init(void)
         esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
         esp_netif_sntp_init(&cfg);
         ESP_LOGI(TAG, "waiting for SNTP...");
-        if (esp_netif_sntp_sync_wait(pdMS_TO_TICKS(35000)) == ESP_OK) {
+        if (esp_netif_sntp_sync_wait(pdMS_TO_TICKS(10000)) == ESP_OK) {
             synced = true;
             ESP_LOGI(TAG, "SNTP synced");
         } else {
@@ -802,6 +927,9 @@ static void sync_task(void *arg)
     /* The first announce fires immediately (mirrors the old startup announce). */
     TickType_t last_announce = xTaskGetTickCount() - pdMS_TO_TICKS(ANNOUNCE_PERIOD_MS);
     TickType_t last_poll = xTaskGetTickCount();
+    TickType_t last_attendance =
+        xTaskGetTickCount() - pdMS_TO_TICKS(ATTENDANCE_PERIOD_MS);
+    int last_clock_sec = -1;
     bool announce_backoff = false;
     bool server_configured = strlen(s_server_url) > 0;
 
@@ -836,6 +964,34 @@ static void sync_task(void *arg)
             if (configured) {
                 poll_presence();
             }
+        }
+
+        if (s_attendance_now) {
+            s_attendance_now = false;
+            last_attendance = now_ticks;
+            if (configured) {
+                refresh_attendance_lcd();
+            }
+        }
+
+        if (now_ticks - last_attendance >= pdMS_TO_TICKS(ATTENDANCE_PERIOD_MS)) {
+            last_attendance = now_ticks;
+            if (configured) {
+                refresh_attendance_lcd();
+            }
+        }
+
+        /* Always show the clock on LCD line 2 (NTP time, or build-epoch fallback). */
+        time_t now_t = time(NULL);
+        struct tm tmv;
+        localtime_r(&now_t, &tmv);
+        if (tmv.tm_sec != last_clock_sec) {
+            last_clock_sec = tmv.tm_sec;
+            char tbuf[17];
+            snprintf(tbuf, sizeof(tbuf), "Time %02d:%02d:%02d", tmv.tm_hour,
+                     tmv.tm_min, tmv.tm_sec);
+            lcd_tick_recover();
+            lcd_print(1, tbuf);
         }
 
         vTaskDelay(pdMS_TO_TICKS(1000));
@@ -885,6 +1041,14 @@ void app_main(void)
     }
 
     config_load_from_nvs();
+
+    led_init();
+
+    // Show the LCD immediately at boot — it must not wait for WiFi/SNTP.
+    if (lcd_init()) {
+        lcd_print(0, "Shusseki");
+        lcd_print(1, "starting...");
+    }
 
     wifi_init();
     time_init();
