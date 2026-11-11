@@ -11,7 +11,7 @@
 static const char *TAG = "rfid";
 
 #define RFID_CS_GPIO 5
-#define RFID_RST_GPIO 16
+#define RFID_RST_GPIO 17
 
 /* MFRC522 registers (datasheet §9). */
 #define REG_COMMAND 0x01

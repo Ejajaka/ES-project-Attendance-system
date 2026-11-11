@@ -35,6 +35,9 @@ bool storage_init(void)
 {
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
     host.slot = SPI2_HOST;
+    /* Long breadboard wires + a shared bus: 10 MHz is much more forgiving
+       than the 20 MHz default while remaining plenty for an attendance log. */
+    host.max_freq_khz = 10000;
 
     sdspi_device_config_t slot = SDSPI_DEVICE_CONFIG_DEFAULT();
     slot.host_id = SPI2_HOST;

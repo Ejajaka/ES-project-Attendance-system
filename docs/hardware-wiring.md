@@ -18,11 +18,11 @@ it to the register when WiFi is available.
 | **GPIO22** | 16×2 LCD | SCL | |
 | **GPIO25** | Status LED (green) | anode | 220–330 Ω to LED, cathode to GND; ON = WiFi |
 | **GPIO5** | MFRC522 RFID | SDA / SS / CS | 3.3 V + GND; SPI2 |
-| **GPIO16** | MFRC522 RFID | RST | |
+| **GPIO17** | MFRC522 RFID | RST | |
 | **GPIO18** | MFRC522 + microSD | SCK | shared SPI clock |
 | **GPIO19** | MFRC522 + microSD | MISO | shared SPI MISO |
 | **GPIO23** | MFRC522 + microSD | MOSI | shared SPI MOSI |
-| **GPIO4** | microSD module | CS | 3.3 V + GND; FAT32 |
+| **GPIO4** | microSD module | CS | **5 V** + GND per the schematic (module regulator); FAT32 |
 | **GPIO32** | Button 1 | one side | other side to GND; internal pull-up |
 | **GPIO33** | Button 2 | one side | other side to GND; internal pull-up |
 | **GPIO26** | Buzzer | + | active buzzer; − to GND (or NPN driver) |
@@ -39,7 +39,7 @@ SDA/SS  ---  GPIO5
 SCK     ---  GPIO18
 MOSI    ---  GPIO23
 MISO    ---  GPIO19
-RST     ---  GPIO16
+RST     ---  GPIO17
 3.3V    ---  3V3
 GND     ---  GND
 IRQ         (not connected)
@@ -53,9 +53,12 @@ CS      ---  GPIO4
 SCK     ---  GPIO18   (shared with RFID)
 MOSI    ---  GPIO23   (shared with RFID)
 MISO    ---  GPIO19   (shared with RFID)
-VCC     ---  3V3
+VCC     ---  5V      (module has its own 3.3 V regulator)
 GND     ---  GND
 ```
+
+The schematic shows the microSD module on **5 V** (its onboard regulator feeds
+the card); the MFRC522 stays on **3.3 V**.
 
 Use a FAT32 card (≤32 GB). The firmware creates:
 

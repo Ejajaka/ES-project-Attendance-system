@@ -112,7 +112,7 @@ static esp_netif_t *s_ap_netif = NULL;
  *   ultrasonic TX : 27 (LEDC, 1.8/2.6 kHz alternating bursts)
  */
 #define RFID_CS_GPIO 5
-#define RFID_RST_GPIO 16
+#define RFID_RST_GPIO 17
 #define SD_CS_GPIO 4
 #define SPI_SCK_GPIO 18
 #define SPI_MISO_GPIO 19
@@ -130,6 +130,8 @@ static volatile bool s_attendance_now = false;
 static volatile bool s_wifi_up = false;
 /** Set by the buttons / a card tap to run an SD queue sync now. */
 static volatile bool s_sync_now = false;
+/** Set when the STA gets an IP so the session is announced immediately. */
+static volatile bool s_announce_now = false;
 /** Set by the clear button (hold 2 s). */
 static volatile bool s_clear_now = false;
 /** microSD mounted successfully. */
@@ -259,17 +261,27 @@ static void button_task(void *arg)
     (void)arg;
     int sync_held = 0;
     int clear_held = 0;
+    /* Arm only after seeing the pin high: a miswired/stuck-low button must not
+       fire a clear at boot. The raw levels are logged in the [hw] summary. */
+    bool sync_armed = false;
+    bool clear_armed = false;
     for (;;) {
-        if (gpio_get_level(BTN_SYNC_GPIO) == 0) {
+        bool sync_low = gpio_get_level(BTN_SYNC_GPIO) == 0;
+        bool clear_low = gpio_get_level(BTN_CLEAR_GPIO) == 0;
+
+        if (!sync_low) sync_armed = true;
+        if (!clear_low) clear_armed = true;
+
+        if (sync_armed && sync_low) {
             sync_held++;
         } else {
-            if (sync_held >= 2) {
+            if (sync_armed && sync_held >= 2) {
                 ESP_LOGI(TAG, "[btn] sync requested");
                 s_sync_now = true;
             }
             sync_held = 0;
         }
-        if (gpio_get_level(BTN_CLEAR_GPIO) == 0) {
+        if (clear_armed && clear_low) {
             clear_held++;
             if (clear_held == 200) { /* 200 × 10 ms = 2 s */
                 ESP_LOGI(TAG, "[btn] clear-local requested (hold)");
@@ -1063,6 +1075,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id,
         s_wifi_up = true;
         s_attendance_now = true;
         s_sync_now = true;
+        s_announce_now = true;
         // Route SoftAP clients out through the STA network (reaches the server).
         if (s_ap_netif && esp_netif_napt_enable(s_ap_netif) == ESP_OK) {
             ESP_LOGI(TAG, "NAPT enabled on SoftAP");
@@ -1252,15 +1265,51 @@ static void sync_task(void *arg)
     TickType_t last_sync = xTaskGetTickCount() - pdMS_TO_TICKS(SYNC_PERIOD_MS);
     bool announce_backoff = false;
     bool server_configured = strlen(s_server_url) > 0;
+    TickType_t boot_ticks = xTaskGetTickCount();
+    TickType_t last_sd_retry = 0;
+    bool hw_logged = false;
 
     for (;;) {
         TickType_t now_ticks = xTaskGetTickCount();
+
+        /* One delayed summary so a serial monitor attached after flashing still
+           sees whether the SD / RFID / input hardware initialised. */
+        if (!hw_logged && now_ticks - boot_ticks >= pdMS_TO_TICKS(4000)) {
+            hw_logged = true;
+            ESP_LOGI(TAG,
+                     "[hw] sd=%s rfid=%s buzzer=GPIO%d ultrasound=GPIO%d "
+                     "buttons=%d/%d levels=%d/%d pending=%d",
+                     s_sd_ok ? "ok" : "missing",
+                     rfid_ready() ? "ok" : "missing", BUZZER_GPIO,
+                     ULTRASONIC_GPIO, BTN_SYNC_GPIO, BTN_CLEAR_GPIO,
+                     gpio_get_level(BTN_SYNC_GPIO),
+                     gpio_get_level(BTN_CLEAR_GPIO), storage_pending_count());
+        }
+
+        /* A card can be inserted after boot — keep trying to mount the SD. */
+        if (!s_sd_ok &&
+            now_ticks - last_sd_retry >= pdMS_TO_TICKS(20000)) {
+            last_sd_retry = now_ticks;
+            s_sd_ok = storage_init();
+            if (s_sd_ok) {
+                lcd_show_temp("SD", "ready", 2000);
+                buzzer_beep(100);
+            }
+        }
 
         /* Re-pick the runtime server URL so a fresh /api/node/config is honoured. */
         bool configured = strlen(s_server_url) > 0;
         if (configured != server_configured) {
             server_configured = configured;
             announce_backoff = false; /* first attempt after (re)config: no backoff */
+        }
+
+        /* Fresh IP: announce immediately instead of waiting for the 50 s tick,
+           so a server restart can't leave the session missing for a minute. */
+        if (s_announce_now && configured) {
+            s_announce_now = false;
+            last_announce = now_ticks;
+            announce_backoff = !announce_session();
         }
 
         /* A failed announce backs the next re-announcement off by 4x, so a
@@ -1395,10 +1444,22 @@ void app_main(void)
     }
 
     spi_init();
-    s_sd_ok = storage_init();
+    /* Park both chip-selects high before probing either SPI device: a floating
+       RC522 CS during the SD mount can otherwise hold MISO and break detection. */
+    gpio_config_t cs = {
+        .pin_bit_mask = (1ULL << SD_CS_GPIO) | (1ULL << RFID_CS_GPIO),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&cs);
+    gpio_set_level(SD_CS_GPIO, 1);
+    gpio_set_level(RFID_CS_GPIO, 1);
     if (!rfid_init()) {
         ESP_LOGW(TAG, "RFID reader unavailable (check 3.3V/SPI wiring)");
     }
+    s_sd_ok = storage_init();
     buzzer_init();
     ultrasonic_init();
     buttons_init();
