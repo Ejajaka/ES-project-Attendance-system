@@ -7,6 +7,7 @@ import {
   type DeviceTimeline,
   type DwellState,
   type DwellOptions,
+  type AttendanceMark,
 } from "shared";
 
 /** One self-reported step from an automated E2E test run. */
@@ -49,6 +50,9 @@ export interface Store {
     present: boolean,
   ): void;
   timelinesForSession(sessionId: string): DeviceTimeline[];
+  /** Record a non-expiring manual/RFID attendance mark. */
+  markPresent(sessionId: string, mark: AttendanceMark): void;
+  marksForSession(sessionId: string): AttendanceMark[];
   /** Fold a raw in-room verdict into the device's dwell state. */
   updateRoomPresence(
     sessionId: string,
@@ -117,6 +121,7 @@ export interface StoreSnapshot {
   hotspots: HotspotAnnouncement[];
   rosters: [string, Student[]][];
   timelines: [string, DeviceTimeline[]][];
+  marks?: [string, AttendanceMark[]][];
   calibrations?: CalibrationSample[];
   telemetry?: [string, TelemetryPoint[]][];
 }
@@ -128,6 +133,7 @@ export class MemoryStore implements Store {
   private hotspots = new Map<string, HotspotAnnouncement>();
   private rosters = new Map<string, Student[]>();
   private timelines = new Map<string, Map<string, DeviceTimeline>>();
+  private marks = new Map<string, Map<string, AttendanceMark>>();
   private dwells = new Map<string, Map<string, DwellState>>();
   private calibrations: CalibrationSample[] = [];
   private baselines = new Map<string, Map<string, SignalBaseline>>();
@@ -290,6 +296,21 @@ export class MemoryStore implements Store {
     return [...(this.timelines.get(sessionId)?.values() ?? [])];
   }
 
+  markPresent(sessionId: string, mark: AttendanceMark): void {
+    const studentId = mark.studentId.trim();
+    if (!studentId) return;
+    let perSession = this.marks.get(sessionId);
+    if (!perSession) {
+      perSession = new Map();
+      this.marks.set(sessionId, perSession);
+    }
+    perSession.set(studentId, { ...mark, studentId });
+  }
+
+  marksForSession(sessionId: string): AttendanceMark[] {
+    return [...(this.marks.get(sessionId)?.values() ?? [])];
+  }
+
   updateRoomPresence(
     sessionId: string,
     deviceId: string,
@@ -338,6 +359,7 @@ export class MemoryStore implements Store {
   clearAttendance(sessionId: string): void {
     this.reports = this.reports.filter((r) => r.sessionId !== sessionId);
     this.timelines.delete(sessionId);
+    this.marks.delete(sessionId);
     this.dwells.delete(sessionId);
     this.telemetry.delete(sessionId);
     // A fresh register should learn each phone's baseline again.
@@ -386,6 +408,7 @@ export class MemoryStore implements Store {
       hotspots: [...this.hotspots.values()],
       rosters: [...this.rosters.entries()],
       timelines: [...this.timelines.entries()].map(([k, m]) => [k, [...m.values()]]),
+      marks: [...this.marks.entries()].map(([k, m]) => [k, [...m.values()]]),
       calibrations: this.calibrations,
       telemetry: [...this.telemetry.entries()],
     };
@@ -401,6 +424,12 @@ export class MemoryStore implements Store {
       (s.timelines ?? []).map(([k, arr]) => [
         k,
         new Map(arr.map((t) => [t.deviceId, t])),
+      ]),
+    );
+    this.marks = new Map(
+      (s.marks ?? []).map(([k, arr]) => [
+        k,
+        new Map(arr.map((m) => [m.studentId, m])),
       ]),
     );
     this.calibrations = s.calibrations ?? [];

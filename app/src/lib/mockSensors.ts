@@ -3,8 +3,15 @@ import type {
   WifiObservation,
   BiometricCheck,
   BleNodeReading,
+  UltrasonicObservation,
 } from "shared";
-import type { DeviceSensors, BleAdapter, WifiAdapter, BiometricAdapter } from "./sensors";
+import type {
+  DeviceSensors,
+  BleAdapter,
+  WifiAdapter,
+  BiometricAdapter,
+  UltrasonicAdapter,
+} from "./sensors";
 
 /**
  * In-memory sensor stand-in. Tests set the public fields; the real app swaps in
@@ -18,6 +25,13 @@ export class MockSensors implements DeviceSensors {
     performedAt: 0,
     kind: "fingerprint",
     success: true,
+  };
+  ultrasonicResult: UltrasonicObservation = {
+    received: false,
+    valid: null,
+    code: null,
+    snr: null,
+    missReason: "no_signal",
   };
   started = { ble: false };
   permissionsRequested = { ble: false, wifi: false };
@@ -61,5 +75,10 @@ export class MockSensors implements DeviceSensors {
       ...this.biometricResult,
       kind,
     }),
+  };
+
+  ultrasonic: UltrasonicAdapter = {
+    observe: async (): Promise<UltrasonicObservation> => this.ultrasonicResult,
+    requestPermissions: async () => true,
   };
 }

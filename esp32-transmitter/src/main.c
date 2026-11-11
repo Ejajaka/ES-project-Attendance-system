@@ -42,6 +42,9 @@
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "driver/gpio.h"
+#include "driver/ledc.h"
+#include "driver/spi_master.h"
+#include "esp_timer.h"
 #if CONFIG_ESP_WIFI_ENTERPRISE_SUPPORT
 #include "esp_eap_client.h"
 #endif
@@ -51,6 +54,8 @@
 #include "esp_gap_ble_api.h"
 
 #include "lcd.h"
+#include "rfid.h"
+#include "storage.h"
 
 static const char *TAG = "shusseki-tx";
 
@@ -98,10 +103,42 @@ static esp_netif_t *s_ap_netif = NULL;
 /** How often the LCD refreshes the live attendance count from the server. */
 #define ATTENDANCE_PERIOD_MS 2000
 
+/*
+ * Extra hardware (see docs/hardware-wiring.md):
+ *   RFID MFRC522  : SPI2, CS=5, RST=16 (SCK=18 MISO=19 MOSI=23)
+ *   microSD       : SPI2, CS=4
+ *   2 buttons     : 32 = sync now (short press), 33 = clear queue (hold 2 s)
+ *   buzzer        : 26 (active-high)
+ *   ultrasonic TX : 27 (LEDC, 1.8/2.6 kHz alternating bursts)
+ */
+#define RFID_CS_GPIO 5
+#define RFID_RST_GPIO 16
+#define SD_CS_GPIO 4
+#define SPI_SCK_GPIO 18
+#define SPI_MISO_GPIO 19
+#define SPI_MOSI_GPIO 23
+#define BTN_SYNC_GPIO 32
+#define BTN_CLEAR_GPIO 33
+#define BUZZER_GPIO 26
+#define ULTRASONIC_GPIO 27
+/** How often queued RFID taps are retried while the STA is up. */
+#define SYNC_PERIOD_MS 15000
+
 /** Set when the STA gets an IP so the LCD refreshes immediately. */
 static volatile bool s_attendance_now = false;
 /** STA link state, shown on LCD line 2. */
 static volatile bool s_wifi_up = false;
+/** Set by the buttons / a card tap to run an SD queue sync now. */
+static volatile bool s_sync_now = false;
+/** Set by the clear button (hold 2 s). */
+static volatile bool s_clear_now = false;
+/** microSD mounted successfully. */
+static bool s_sd_ok = false;
+/** Temporary LCD text requested by another task (printed by the sync task). */
+static char s_msg0[17];
+static char s_msg1[17];
+static volatile bool s_msg_pending = false;
+static uint32_t s_lcd_temp_until_ms = 0;
 
 #ifndef DEV_SEED_EPOCH
 #define DEV_SEED_EPOCH 0
@@ -120,6 +157,22 @@ static volatile bool s_wifi_up = false;
  * rewind the clock.
  */
 #define CLOCK_SYNC_TOL_S 90
+
+static int http_post_json(const char *path, const char *body);
+
+static uint32_t now_ms(void)
+{
+    return (uint32_t)(esp_timer_get_time() / 1000);
+}
+
+/** Ask for a temporary LCD message; the sync task does the actual I2C write. */
+static void lcd_show_temp(const char *line0, const char *line1, uint32_t ms)
+{
+    snprintf(s_msg0, sizeof(s_msg0), "%s", line0 ? line0 : "");
+    snprintf(s_msg1, sizeof(s_msg1), "%s", line1 ? line1 : "");
+    s_lcd_temp_until_ms = now_ms() + ms;
+    s_msg_pending = true;
+}
 
 /* --------------------------------------------------------------------- LED */
 
@@ -158,6 +211,251 @@ static void led_set(bool on)
     gpio_set_level(LED_GPIO, on ? 1 : 0);
     ESP_LOGI(TAG, "LED %s (wifi %s)", on ? "ON" : "OFF",
              on ? "connected" : "down");
+}
+
+/* --------------------------------------------------------- buzzer + buttons */
+
+static void buzzer_init(void)
+{
+    gpio_config_t io = {
+        .pin_bit_mask = 1ULL << BUZZER_GPIO,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&io);
+    gpio_set_level(BUZZER_GPIO, 0);
+}
+
+/** Active-high buzzer. Short = card accepted, double = unknown card. */
+static void buzzer_beep(int ms)
+{
+    if (ms <= 0) return;
+    gpio_set_level(BUZZER_GPIO, 1);
+    vTaskDelay(pdMS_TO_TICKS(ms));
+    gpio_set_level(BUZZER_GPIO, 0);
+}
+
+static void buttons_init(void)
+{
+    gpio_config_t io = {
+        .pin_bit_mask = (1ULL << BTN_SYNC_GPIO) | (1ULL << BTN_CLEAR_GPIO),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&io);
+}
+
+/**
+ * BTN1 (GPIO32): short press → upload the SD queue now.
+ * BTN2 (GPIO33): hold 2 s → clear the SD queue (server rows are untouched).
+ * The actual SD/HTTP work happens in sync_task so the two never race.
+ */
+static void button_task(void *arg)
+{
+    (void)arg;
+    int sync_held = 0;
+    int clear_held = 0;
+    for (;;) {
+        if (gpio_get_level(BTN_SYNC_GPIO) == 0) {
+            sync_held++;
+        } else {
+            if (sync_held >= 2) {
+                ESP_LOGI(TAG, "[btn] sync requested");
+                s_sync_now = true;
+            }
+            sync_held = 0;
+        }
+        if (gpio_get_level(BTN_CLEAR_GPIO) == 0) {
+            clear_held++;
+            if (clear_held == 200) { /* 200 × 10 ms = 2 s */
+                ESP_LOGI(TAG, "[btn] clear-local requested (hold)");
+                s_clear_now = true;
+            }
+        } else {
+            clear_held = 0;
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
+/* --------------------------------------------------------------- ultrasonic */
+
+/**
+ * Restores the Soshin ultrasonic presence stamp: four alternating 1.8/2.6 kHz
+ * bursts (120 ms on, 220 ms gap) then a pause, repeating. Drive a piezo or a
+ * small amp+speaker from GPIO27.
+ */
+static void ultrasonic_init(void)
+{
+    ledc_timer_config_t timer = {
+        .speed_mode = LEDC_LOW_SPEED_MODE,
+        .duty_resolution = LEDC_TIMER_10_BIT,
+        .timer_num = LEDC_TIMER_0,
+        .freq_hz = 2600,
+        .clk_cfg = LEDC_AUTO_CLK,
+    };
+    if (ledc_timer_config(&timer) != ESP_OK) {
+        ESP_LOGW(TAG, "ultrasonic LEDC timer init failed");
+        return;
+    }
+    ledc_channel_config_t ch = {
+        .gpio_num = ULTRASONIC_GPIO,
+        .speed_mode = LEDC_LOW_SPEED_MODE,
+        .channel = LEDC_CHANNEL_0,
+        .intr_type = LEDC_INTR_DISABLE,
+        .timer_sel = LEDC_TIMER_0,
+        .duty = 0,
+        .hpoint = 0,
+    };
+    if (ledc_channel_config(&ch) != ESP_OK) {
+        ESP_LOGW(TAG, "ultrasonic LEDC channel init failed");
+        return;
+    }
+    ESP_LOGI(TAG, "ultrasonic stamp on GPIO%d (1.8/2.6 kHz)", ULTRASONIC_GPIO);
+}
+
+static void ultrasonic_task(void *arg)
+{
+    (void)arg;
+    static const uint32_t freqs[4] = {1800, 2600, 1800, 2600};
+    for (;;) {
+        for (int i = 0; i < 4; i++) {
+            ledc_set_freq(LEDC_LOW_SPEED_MODE, LEDC_TIMER_0, freqs[i]);
+            ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 512); /* 50% */
+            ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+            vTaskDelay(pdMS_TO_TICKS(120));
+            ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
+            ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+            vTaskDelay(pdMS_TO_TICKS(220));
+        }
+        vTaskDelay(pdMS_TO_TICKS(600));
+    }
+}
+
+/* ----------------------------------------------------------------- SPI bus */
+
+static void spi_init(void)
+{
+    spi_bus_config_t bus = {
+        .mosi_io_num = SPI_MOSI_GPIO,
+        .miso_io_num = SPI_MISO_GPIO,
+        .sclk_io_num = SPI_SCK_GPIO,
+        .quadwp_io_num = -1,
+        .quadhd_io_num = -1,
+        .max_transfer_sz = 4096,
+    };
+    esp_err_t err = spi_bus_initialize(SPI2_HOST, &bus, SPI_DMA_CH_AUTO);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "SPI2 init failed: %s", esp_err_to_name(err));
+    }
+}
+
+/* ---------------------------------------------------------------- RFID + SD */
+
+static void json_escape(const char *in, char *out, size_t outsz)
+{
+    size_t o = 0;
+    for (const char *p = in; p && *p && o + 2 < outsz; p++) {
+        char c = *p;
+        if (c == '"' || c == '\\') {
+            out[o++] = '\\';
+            out[o++] = c;
+        } else if (c == '\n' || c == '\r') {
+            out[o++] = ' ';
+        } else {
+            out[o++] = c;
+        }
+    }
+    out[o] = '\0';
+}
+
+static int post_rfid(const char *json)
+{
+    return http_post_json("/api/sessions/" PRESET_SESSION_ID "/rfid", json);
+}
+
+/** One card tap: map UID → roll/name, mirror to SD, queue for the server. */
+static void handle_card(const char *uid_hex)
+{
+    char roll[64];
+    char name[64];
+    bool mapped = s_sd_ok &&
+                  storage_lookup_uid(uid_hex, roll, sizeof(roll), name,
+                                     sizeof(name));
+    if (!mapped) {
+        snprintf(roll, sizeof(roll), "RFID-%s", uid_hex);
+        snprintf(name, sizeof(name), "Card %s", uid_hex);
+    }
+
+    int64_t at = (int64_t)time(NULL) * 1000;
+    if (s_sd_ok) {
+        storage_log_scan(at, uid_hex, roll, name);
+    }
+
+    char er[96];
+    char en[96];
+    char json[320];
+    json_escape(roll, er, sizeof(er));
+    json_escape(name, en, sizeof(en));
+    snprintf(json, sizeof(json),
+             "{\"uid\":\"%s\",\"studentId\":\"%s\",\"studentName\":\"%s\","
+             "\"at\":%lld}",
+             uid_hex, er, en, (long long)at);
+
+    bool queued = s_sd_ok && storage_enqueue(json);
+    if (!queued) {
+        /* No SD card: still work online, directly. */
+        int status = post_rfid(json);
+        ESP_LOGI(TAG, "[rfid] direct upload -> %d", status);
+    }
+    s_sync_now = true;
+
+    if (mapped) {
+        buzzer_beep(100);
+    } else {
+        buzzer_beep(60);
+        vTaskDelay(pdMS_TO_TICKS(80));
+        buzzer_beep(60);
+    }
+    char line1[17];
+    snprintf(line1, sizeof(line1), "%.16s", roll);
+    lcd_show_temp("RFID", line1, 2500);
+    ESP_LOGI(TAG, "[rfid] uid=%s roll=%s name=%s queued=%d", uid_hex, roll,
+             name, queued);
+}
+
+/** Poll the reader; a card left on the antenna is re-reported after 3 s. */
+static void rfid_task(void *arg)
+{
+    (void)arg;
+    uint8_t uid[10];
+    uint8_t uid_len = 0;
+    char last_uid[16] = "";
+    TickType_t last_at = 0;
+
+    for (;;) {
+        if (rfid_read_uid(uid, &uid_len) && uid_len > 0) {
+            char hex[16];
+            size_t o = 0;
+            for (uint8_t i = 0; i < uid_len && o + 2 < sizeof(hex); i++) {
+                o += (size_t)snprintf(hex + o, sizeof(hex) - o, "%02X", uid[i]);
+            }
+            hex[o] = '\0';
+
+            TickType_t now = xTaskGetTickCount();
+            if (strcmp(hex, last_uid) != 0 ||
+                now - last_at > pdMS_TO_TICKS(3000)) {
+                handle_card(hex);
+                snprintf(last_uid, sizeof(last_uid), "%s", hex);
+                last_at = now;
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(250));
+    }
 }
 
 /* --------------------------------------------------------------------- TOTP */
@@ -414,6 +712,10 @@ static int http_get_text(const char *path, char *out, size_t outsz)
 static void refresh_attendance_lcd(void)
 {
     lcd_tick_recover();
+    /* A card tap / button message owns the LCD for a moment. */
+    if (now_ms() < s_lcd_temp_until_ms) {
+        return;
+    }
     char body[2048];
     int status = http_get_text("/api/sessions/" PRESET_SESSION_ID "/attendance",
                                body, sizeof(body));
@@ -760,6 +1062,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id,
         led_set(true);
         s_wifi_up = true;
         s_attendance_now = true;
+        s_sync_now = true;
         // Route SoftAP clients out through the STA network (reaches the server).
         if (s_ap_netif && esp_netif_napt_enable(s_ap_netif) == ESP_OK) {
             ESP_LOGI(TAG, "NAPT enabled on SoftAP");
@@ -946,6 +1249,7 @@ static void sync_task(void *arg)
     TickType_t last_poll = xTaskGetTickCount();
     TickType_t last_attendance =
         xTaskGetTickCount() - pdMS_TO_TICKS(ATTENDANCE_PERIOD_MS);
+    TickType_t last_sync = xTaskGetTickCount() - pdMS_TO_TICKS(SYNC_PERIOD_MS);
     bool announce_backoff = false;
     bool server_configured = strlen(s_server_url) > 0;
 
@@ -994,6 +1298,42 @@ static void sync_task(void *arg)
             last_attendance = now_ticks;
             if (configured) {
                 refresh_attendance_lcd();
+            }
+        }
+
+        /* Temporary card/button message requested by another task. */
+        if (s_msg_pending) {
+            s_msg_pending = false;
+            lcd_print(0, s_msg0);
+            lcd_print(1, s_msg1);
+        }
+
+        /* Button 2: drop the local upload queue (server rows are untouched). */
+        if (s_clear_now) {
+            s_clear_now = false;
+            int removed = s_sd_ok ? storage_clear_pending() : 0;
+            ESP_LOGI(TAG, "[sd] cleared %d local queued tap(s)", removed);
+            lcd_show_temp("Queue", s_sd_ok ? "cleared" : "no SD", 2000);
+            buzzer_beep(150);
+        }
+
+        /* Upload card taps: on demand (button / fresh tap / WiFi up) and
+           periodically while the STA is connected. */
+        if (configured && s_wifi_up && s_sd_ok &&
+            (s_sync_now ||
+             now_ticks - last_sync >= pdMS_TO_TICKS(SYNC_PERIOD_MS))) {
+            s_sync_now = false;
+            last_sync = now_ticks;
+            int uploaded = storage_sync_pending(post_rfid);
+            int left = storage_pending_count();
+            if (uploaded > 0) {
+                ESP_LOGI(TAG, "[sd] uploaded %d tap(s), %d still queued",
+                         uploaded, left);
+                lcd_show_temp("Synced", left ? "more pending" : "all taps", 1600);
+                buzzer_beep(120);
+            } else if (left > 0) {
+                ESP_LOGI(TAG, "[sd] %d tap(s) pending (server unreachable)",
+                         left);
             }
         }
 
@@ -1048,9 +1388,23 @@ void app_main(void)
     led_init();
 
     // Show the LCD immediately at boot — it must not wait for WiFi/SNTP.
-    if (lcd_init()) {
+    bool lcd_ok = lcd_init();
+    if (lcd_ok) {
         lcd_print(0, "Shusseki");
         lcd_print(1, STA_SSID);
+    }
+
+    spi_init();
+    s_sd_ok = storage_init();
+    if (!rfid_init()) {
+        ESP_LOGW(TAG, "RFID reader unavailable (check 3.3V/SPI wiring)");
+    }
+    buzzer_init();
+    ultrasonic_init();
+    buttons_init();
+
+    if (lcd_ok) {
+        lcd_show_temp("Shusseki", s_sd_ok ? "SD ready" : "SD missing", 2500);
     }
 
     wifi_init();
@@ -1060,4 +1414,7 @@ void app_main(void)
 
     xTaskCreate(sync_task, "sync", 6144, NULL, 5, NULL);
     xTaskCreate(ble_task, "ble", 6144, NULL, 5, NULL);
+    xTaskCreate(rfid_task, "rfid", 4096, NULL, 4, NULL);
+    xTaskCreate(button_task, "btn", 2048, NULL, 3, NULL);
+    xTaskCreate(ultrasonic_task, "ultra", 2048, NULL, 3, NULL);
 }

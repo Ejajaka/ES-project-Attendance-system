@@ -204,6 +204,35 @@ test("attendance: roster + reports produce a sheet, CSV and HTML", async () => {
   expect(await html.text()).toContain("Shusseki attendance");
 });
 
+test("RFID tap marks attendance and auto-enrolls the card holder", async () => {
+  const app = makeApp();
+  await app.request("/api/sessions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId: "s1", roomId: "r1", secret: SECRET_B64 }),
+  });
+  const tap = await app.request("/api/sessions/s1/rfid", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      uid: "A1B2C3D4",
+      studentId: "bl.rfid",
+      studentName: "Card Holder",
+      at: ALIGNED,
+    }),
+  });
+  expect(tap.status).toBe(201);
+
+  // No phone report at all — the mark alone must keep the row present even
+  // after the report TTL would have expired.
+  const sheet = await (await app.request("/api/sessions/s1/attendance")).json();
+  expect(sheet.rosterCount).toBe(1);
+  expect(sheet.presentCount).toBe(1);
+  const row = sheet.rows.find((r: { studentId: string }) => r.studentId === "bl.rfid");
+  expect(row.present).toBe(true);
+  expect(row.name).toBe("Card Holder");
+});
+
 test("attendance endpoints 404 for unknown sessions; bad roster 400s", async () => {
   const app = makeApp();
   expect((await app.request("/api/sessions/nope/attendance")).status).toBe(404);

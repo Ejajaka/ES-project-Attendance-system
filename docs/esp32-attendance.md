@@ -4,6 +4,11 @@ This document records what was built on top of the Shusseki monorepo, how each
 piece works, the exact configuration used, how to run it, and the known gaps.
 Branch: `feat/esp32-transmitter-attendance`.
 
+> **2026-11 hardware expansion:** the node also has an MFRC522 RFID reader,
+> microSD attendance mirror/queue, two buttons (sync / clear), a buzzer, and the
+> ultrasonic speaker restored on **GPIO27** (the WiFi LED stays on GPIO25).
+> Wiring, pin map and SD file formats: [`hardware-wiring.md`](./hardware-wiring.md).
+
 ---
 
 ## 0. Current deployment — open `atlas` (2026-10-31)
@@ -128,8 +133,9 @@ Key behaviour in `main.c`:
   `shared/src/rollingCode.ts`.
 * **SoftAP**: `Shusseki-ESP32`, WPA2; **NAPT enabled** when the STA gets an IP.
 * **STA**: joins `Shusseki-Room` for NTP + server access.
-* **Ultrasonic**: 1.8 kHz, 4×120 ms bursts / 220 ms gaps on LEDC GPIO 25
-  (matches `ShussekiUltrasonicModule.kt`; needs an amp+speaker to be audible).
+* **Ultrasonic**: alternating 1.8/2.6 kHz, 4×120 ms bursts / 220 ms gaps on
+  LEDC **GPIO 27** (matches `ShussekiUltrasonicModule.kt`; piezo or amp+speaker).
+  The WiFi status LED moved to GPIO 25.
 * **Server bootstrap**: `POST /api/sessions` (secret base64) and
   `POST /api/sessions/:id/hotspot`; **re-announces every ~50 s** so a server
   restart doesn't drop the registration.

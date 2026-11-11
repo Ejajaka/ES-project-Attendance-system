@@ -1,4 +1,8 @@
-import type { DeviceReport, BiometricCheck } from "shared";
+import type {
+  DeviceReport,
+  BiometricCheck,
+  UltrasonicObservation,
+} from "shared";
 import type { DeviceSensors } from "../sensors";
 import type { Reporter, ReportResult } from "../reporter";
 import { RssiSmoother } from "../rssiSmoother";
@@ -99,6 +103,9 @@ export class JushinController {
     void this.sensors.wifi
       .joinSoshin(this.config.soshinSsid, this.config.soshinPass)
       .catch(() => {});
+    // Mic permission is requested non-blockingly; a denied permission degrades
+    // to "not heard" instead of blocking attendance.
+    void this.sensors.ultrasonic?.requestPermissions?.().catch(() => {});
     await this.sensors.ble.start("jushin", {
       roomId: this.config.roomId,
       nodeId: this.config.deviceId,
@@ -106,11 +113,37 @@ export class JushinController {
     return this.startBio;
   }
 
-  /** One sensing cycle: gather BLE + WiFi and report to the server. */
+  /**
+   * Ultrasonic listen cannot stall the tick: the 1.8 s window is bounded by a
+   * hard 3 s race, and a missing/hung mic degrades to "not heard".
+   */
+  private async observeUltrasonic(): Promise<UltrasonicObservation | undefined> {
+    if (!this.sensors.ultrasonic) return undefined;
+    const silent: UltrasonicObservation = {
+      received: false,
+      valid: null,
+      code: null,
+      snr: null,
+      missReason: "service_killed",
+    };
+    try {
+      return await Promise.race([
+        this.sensors.ultrasonic.observe(1800),
+        new Promise<UltrasonicObservation>((resolve) =>
+          setTimeout(() => resolve(silent), 3000),
+        ),
+      ]);
+    } catch {
+      return silent;
+    }
+  }
+
+  /** One sensing cycle: gather BLE + WiFi + ultrasonic and report to the server. */
   async tick(now: number): Promise<DeviceReport> {
-    const [bleRaw, wifiRaw] = await Promise.all([
+    const [bleRaw, wifiRaw, ultrasonic] = await Promise.all([
       this.sensors.ble.observe(),
       this.sensors.wifi.observe(),
+      this.observeUltrasonic(),
     ]);
 
     // Deduplicate repeated advertisements from the same node (keep the
@@ -147,6 +180,7 @@ export class JushinController {
       timestamp: now,
       ble,
       wifi,
+      ultrasonic,
       biometric: this.startBio ?? undefined,
     };
 

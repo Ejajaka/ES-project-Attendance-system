@@ -22,3 +22,7 @@ CONFIG_ESP_WIFI_ENTERPRISE_SUPPORT=y
 # on the STA-side network (wire-free topology: phone -> room AP -> hotspot -> PC).
 CONFIG_LWIP_IP_FORWARD=y
 CONFIG_LWIP_IPV4_NAPT=y
+
+# microSD (FATFS): long filenames for attendance.csv / rfid.csv / pending queue.
+CONFIG_FATFS_LFN_STACK=y
+CONFIG_FATFS_MAX_LFN=255

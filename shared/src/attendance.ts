@@ -50,6 +50,21 @@ export interface DeviceTimeline {
  */
 export const ATTENDANCE_MAX_GAP_MS = 60_000;
 
+/**
+ * A point-in-time manual mark (RFID card tap, teacher override). Unlike a
+ * report timeline it does not expire with the report TTL: once marked, the
+ * student stays present until an explicit attendance reset.
+ */
+export interface AttendanceMark {
+  studentId: string;
+  /** When the mark happened (ms epoch). */
+  at: number;
+  /** RFID card UID (or other source id), for auditability. */
+  uid?: string;
+  /** Name supplied by the mark source (never replaces a non-empty roster name). */
+  name?: string;
+}
+
 /** One row of the attendance sheet. */
 export interface AttendanceRow {
   studentId: string;
@@ -93,15 +108,23 @@ export function buildAttendance(input: {
   generatedAt: number;
   students: Student[];
   timelines: DeviceTimeline[];
+  /** Manual/RFID marks that never expire with the report TTL. */
+  marks?: AttendanceMark[];
   /** When set, a timeline older than this is treated as absent (stale). */
   ttlMs?: number;
 }): AttendanceSheet {
   const { sessionId, generatedAt, students, timelines, ttlMs } = input;
   const used = new Set<string>();
   const norm = (v?: string) => (v ?? "").trim();
+  const markByStudent = new Map<string, AttendanceMark>();
+  for (const m of input.marks ?? []) {
+    const sid = norm(m.studentId);
+    if (sid) markByStudent.set(sid, m);
+  }
 
   const rows: AttendanceRow[] = students.map((s) => {
     const sid = norm(s.studentId);
+    const mark = markByStudent.get(sid);
     const candidates = timelines.filter((x) => {
       const byStudent = sid !== "" && norm(x.studentId) === sid;
       if (byStudent) return true;
@@ -132,15 +155,18 @@ export function buildAttendance(input: {
     const latched = t?.everPresent ?? (t?.present ?? false);
     const fresh =
       t != null && (ttlMs == null || generatedAt - t.lastSeen <= ttlMs);
+    const marked = mark != null;
     return {
       studentId: s.studentId,
       name: s.name,
       deviceId: t?.deviceId ?? s.deviceId ?? null,
-      present: latched && fresh,
-      firstSeen: t?.firstSeen ?? null,
-      lastSeen: t?.lastSeen ?? null,
+      // A manual/RFID mark outlives the report TTL (offline card tap): it is
+      // only cleared by an explicit attendance reset.
+      present: marked || (latched && fresh),
+      firstSeen: t?.firstSeen ?? mark?.at ?? null,
+      lastSeen: t?.lastSeen ?? mark?.at ?? null,
       presentMs: t?.presentMs ?? 0,
-      coverage: t ? coverageOf(t) : 0,
+      coverage: t ? coverageOf(t) : marked ? 1 : 0,
     };
   });
 

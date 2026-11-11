@@ -160,6 +160,43 @@ describe("buildAttendance", () => {
     expect(sheet.presentCount).toBe(1);
   });
 
+  test("an RFID/manual mark is present without any timeline", () => {
+    const sheet = buildAttendance({
+      sessionId: "s",
+      generatedAt: 100_000,
+      ttlMs: 30_000,
+      students: [{ studentId: "bl.1", name: "Ada" }],
+      timelines: [],
+      marks: [{ studentId: "bl.1", at: 90_000, uid: "A1B2C3D4" }],
+    });
+    expect(sheet.rows[0]!.present).toBe(true);
+    expect(sheet.rows[0]!.firstSeen).toBe(90_000);
+    expect(sheet.rows[0]!.lastSeen).toBe(90_000);
+    expect(sheet.rows[0]!.coverage).toBe(1);
+    expect(sheet.presentCount).toBe(1);
+  });
+
+  test("an RFID/manual mark outlives the report TTL", () => {
+    const sheet = buildAttendance({
+      sessionId: "s",
+      generatedAt: 100_000,
+      ttlMs: 30_000,
+      students: [{ studentId: "bl.1", name: "Ada" }],
+      timelines: [
+        timeline({
+          deviceId: "p",
+          studentId: "bl.1",
+          present: false,
+          everPresent: true,
+          lastSeen: 10_000,
+        }),
+      ],
+      marks: [{ studentId: "bl.1", at: 95_000, uid: "A1B2C3D4" }],
+    });
+    expect(sheet.rows[0]!.present).toBe(true);
+    expect(sheet.presentCount).toBe(1);
+  });
+
   test("a stale device does not leave a phantom present row", () => {
     const sheet = buildAttendance({
       sessionId: "s",

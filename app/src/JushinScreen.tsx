@@ -4,6 +4,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import {
   bleConfidence,
   wifiConfidence,
+  ultrasonicConfidence,
   fuse,
   decide,
   summarizeLink,
@@ -62,6 +63,7 @@ function fmtTime(t: number): string {
 interface LocalConfidence {
   ble: number | null;
   wifi: number | null;
+  ultrasonic: number | null;
   fused: number;
   present: boolean;
 }
@@ -592,6 +594,7 @@ export default function JushinScreen({
                     [
                       ["ble", local.ble, "BLE"],
                       ["wifi", local.wifi, "WiFi"],
+                      ["ultrasonic", local.ultrasonic, "ULTRASONIC"],
                     ] as const
                   ).map(([key, value, label]) => (
                     <View key={key} className="gap-1">
@@ -615,6 +618,16 @@ export default function JushinScreen({
                                   : ""
                               }`
                             : "not joined"
+                        }
+                      />
+                      <DataRow
+                        label="Ultrasonic"
+                        value={
+                          lastReport.ultrasonic == null
+                            ? "not sampled"
+                            : lastReport.ultrasonic.received
+                              ? `heard${lastReport.ultrasonic.snr != null ? ` · snr ${lastReport.ultrasonic.snr.toFixed(1)}` : ""}`
+                              : `not heard · ${lastReport.ultrasonic.missReason ?? "no_signal"}`
                         }
                       />
                     </>
@@ -795,11 +808,19 @@ function computeLocal(report: DeviceReport): LocalConfidence {
       })
     : null;
 
+  const ultrasonic = report.ultrasonic
+    ? ultrasonicConfidence({
+        received: report.ultrasonic.received,
+        valid: report.ultrasonic.valid,
+      })
+    : null;
+
   const confs: Partial<Record<"ble" | "wifi" | "ultrasonic", number>> = {};
   if (ble != null) confs.ble = ble;
   if (wifi != null) confs.wifi = wifi;
+  if (ultrasonic != null) confs.ultrasonic = ultrasonic;
   const fused = fuse(confs);
-  return { ble, wifi, fused, present: decide(fused) };
+  return { ble, wifi, ultrasonic, fused, present: decide(fused) };
 }
 
 function fmtClock(s: number): string {

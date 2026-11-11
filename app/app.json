@@ -20,7 +20,8 @@
         "NSBluetoothAlwaysUsageDescription": "Shusseki uses Bluetooth to sense room presence.",
         "NSBluetoothPeripheralUsageDescription": "Shusseki uses Bluetooth to sense room presence.",
         "NSLocationWhenInUseUsageDescription": "WiFi RSSI requires location to estimate room presence.",
-        "NSFaceIDUsageDescription": "Shusseki verifies the device owner at attendance boundaries."
+        "NSFaceIDUsageDescription": "Shusseki verifies the device owner at attendance boundaries.",
+        "NSMicrophoneUsageDescription": "Shusseki listens for the room's ultrasonic presence stamp."
       }
     },
     "android": {
@@ -40,7 +41,8 @@
         "android.permission.ACCESS_WIFI_STATE",
         "android.permission.ACCESS_NETWORK_STATE",
         "android.permission.FOREGROUND_SERVICE",
-        "android.permission.POST_NOTIFICATIONS"
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.RECORD_AUDIO"
       ]
     },
     "plugins": [

@@ -3,11 +3,13 @@ import type {
   BleAdapter,
   WifiAdapter,
   BiometricAdapter,
+  UltrasonicAdapter,
 } from "./sensors";
 import type {
   BleObservation,
   WifiObservation,
   BiometricCheck,
+  UltrasonicObservation,
 } from "shared";
 import {
   bleAdvertise,
@@ -25,6 +27,10 @@ import {
   wifiRequestPermissionsAsync,
 } from "expo-shusseki-wifi";
 import { bioPerform } from "expo-shusseki-biometric";
+import {
+  ultraListen,
+  ultraRequestPermissionsAsync,
+} from "expo-shusseki-ultrasonic";
 
 /**
  * Real sensor implementation backed by the Expo native modules. This is the
@@ -113,6 +119,33 @@ export class NativeSensors implements DeviceSensors {
         success: r.success,
         reason: r.reason ?? undefined,
       };
+    },
+  };
+
+  ultrasonic: UltrasonicAdapter = {
+    observe: async (timeoutMs = 1800): Promise<UltrasonicObservation> => {
+      try {
+        const u = await ultraListen(timeoutMs);
+        return {
+          received: u.received,
+          valid: u.valid,
+          code: u.code,
+          snr: u.snr,
+          missReason: u.missReason ?? undefined,
+        };
+      } catch (e) {
+        console.warn("[ultrasonic] listen failed:", e);
+        return {
+          received: false,
+          valid: null,
+          code: null,
+          snr: null,
+          missReason: "service_killed",
+        };
+      }
+    },
+    requestPermissions: async () => {
+      return (await ultraRequestPermissionsAsync()).granted;
     },
   };
 }

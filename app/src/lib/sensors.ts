@@ -3,6 +3,7 @@ import type {
   WifiObservation,
   BiometricCheck,
   BleNodeReading,
+  UltrasonicObservation,
 } from "shared";
 
 /**
@@ -48,10 +49,19 @@ export interface BiometricAdapter {
   perform(kind: "fingerprint" | "face"): Promise<BiometricCheck>;
 }
 
+/** Jushin listens only; the room node (ESP32) is the ultrasonic source. */
+export interface UltrasonicAdapter {
+  /** Listen for the alternating two-tone presence stamp. */
+  observe(timeoutMs?: number): Promise<UltrasonicObservation>;
+  /** Prompt for the RECORD_AUDIO runtime permission. */
+  requestPermissions?: () => Promise<boolean>;
+}
+
 export interface DeviceSensors {
   ble: BleAdapter;
   wifi: WifiAdapter;
   biometric: BiometricAdapter;
+  ultrasonic?: UltrasonicAdapter;
 }
 
 export type { BleNodeReading };

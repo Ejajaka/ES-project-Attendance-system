@@ -443,6 +443,7 @@ export function createApp(store: Store, sessions: SessionRegistry): Hono {
       timelines: store
         .timelinesForSession(id)
         .filter((t) => !t.deviceId.startsWith("calibrate-")),
+      marks: store.marksForSession(id),
       ttlMs: sessions.get(id)?.ttlMs ?? ROOM_TTL_MS,
     });
 
@@ -583,6 +584,46 @@ export function createApp(store: Store, sessions: SessionRegistry): Hono {
     if (!sessions.get(id)) return c.json({ error: "unknown session" }, 404);
     store.clearCalibration(id);
     return c.json({ ok: true });
+  });
+
+  // RFID / offline card tap. The ESP32 queues these on its microSD when WiFi
+  // is unavailable and replays them here when it reconnects. A mark is
+  // intentionally non-expiring: it is only cleared by an attendance reset.
+  app.post("/api/sessions/:id/rfid", async (c) => {
+    const id = c.req.param("id");
+    const config = sessions.get(id);
+    if (!config) return c.json({ error: "unknown session" }, 404);
+    if (config.paused) return c.json({ paused: true }, 409);
+    let body: {
+      uid?: string;
+      studentId?: string;
+      studentName?: string;
+      at?: number;
+    };
+    try {
+      body = (await c.req.json()) as typeof body;
+    } catch {
+      return c.json({ error: "invalid JSON" }, 400);
+    }
+    const uid =
+      typeof body.uid === "string" ? body.uid.trim().toUpperCase() : "";
+    const studentId =
+      (typeof body.studentId === "string" && body.studentId.trim()) ||
+      (uid ? `RFID-${uid}` : "");
+    if (!studentId) {
+      return c.json({ error: "studentId or uid is required" }, 400);
+    }
+    const name =
+      typeof body.studentName === "string" && body.studentName.trim()
+        ? body.studentName.trim()
+        : undefined;
+    const at =
+      typeof body.at === "number" && Number.isFinite(body.at)
+        ? body.at
+        : Date.now();
+    store.ensureStudent(id, { studentId, name });
+    store.markPresent(id, { studentId, at, uid: uid || undefined, name });
+    return c.json({ ok: true, studentId, at, source: "rfid" }, 201);
   });
 
   // Clear the attendance register AND the roster (drops reports, timelines,
