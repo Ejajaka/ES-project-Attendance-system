@@ -24,6 +24,9 @@ static const char *TAG = "rfid";
 #define REG_BIT_FRAMING 0x0D
 #define REG_COLL 0x0E
 #define REG_MODE 0x11
+#define REG_STATUS2 0x08
+#define REG_CRC_RESULT_H 0x21
+#define REG_CRC_RESULT_L 0x22
 #define REG_TX_CONTROL 0x14
 #define REG_TX_ASK 0x15
 #define REG_T_MODE 0x2A
@@ -34,6 +37,7 @@ static const char *TAG = "rfid";
 
 #define CMD_IDLE 0x00
 #define CMD_TRANSCEIVE 0x0C
+#define CMD_MFAUTHENT 0x0E
 #define CMD_SOFT_RESET 0x0F
 
 #define PICC_REQA 0x26
@@ -243,7 +247,7 @@ static bool picc_anticoll(uint8_t uid[4])
     return true;
 }
 
-static bool picc_select(const uint8_t uid[4])
+static bool picc_select(const uint8_t uid[4], uint8_t *sak)
 {
     uint8_t cmd[7] = {
         PICC_SEL_CL1, PICC_SELECT, uid[0], uid[1], uid[2], uid[3],
@@ -255,10 +259,174 @@ static bool picc_select(const uint8_t uid[4])
     if (!pcd_transceive(cmd, sizeof(cmd), back, &bits, 0)) {
         return false;
     }
-    return bits == 24; /* SAK */
+    if (bits != 24) return false; /* SAK */
+    if (sak) *sak = back[0];
+    return true;
 }
 
-bool rfid_read_uid(uint8_t uid[10], uint8_t *uid_len)
+/* ---------------------------------------------------- MIFARE card records */
+
+static const uint8_t k_default_keys[][6] = {
+    {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},
+    {0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5},
+    {0xD3, 0xF7, 0xD3, 0xF7, 0xD3, 0xF7},
+    {0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+};
+
+static void pcd_stop_crypto(void)
+{
+    rfid_clear_bit(REG_STATUS2, 0x08);
+}
+
+/** MIFARE Classic key-A authentication (ISO 14443-3 Crypto1). */
+static bool pcd_auth_keya(uint8_t block, const uint8_t key[6],
+                          const uint8_t uid[4])
+{
+    uint8_t buf[12] = {0x60, block};
+    memcpy(buf + 2, key, 6);
+    memcpy(buf + 8, uid, 4);
+
+    pcd_stop_crypto();
+    rfid_write(REG_COMMAND, CMD_IDLE);
+    rfid_write(REG_COM_IRQ, 0x7F);
+    rfid_write(REG_FIFO_LEVEL, 0x80);
+    for (size_t i = 0; i < sizeof(buf); i++) {
+        rfid_write(REG_FIFO_DATA, buf[i]);
+    }
+    rfid_write(REG_COMMAND, CMD_MFAUTHENT);
+
+    TickType_t start = xTaskGetTickCount();
+    bool idle = false;
+    while (xTaskGetTickCount() - start < pdMS_TO_TICKS(80)) {
+        if (rfid_read(REG_COM_IRQ) & 0x10) { /* IdleIRq */
+            idle = true;
+            break;
+        }
+        vTaskDelay(1);
+    }
+    if (!idle) return false;
+    if (rfid_read(REG_ERROR) & 0x13) return false;
+    return (rfid_read(REG_STATUS2) & 0x08) != 0; /* Crypto1On */
+}
+
+/** Read one 16-byte MIFARE Classic block (caller is authenticated). */
+static bool mifare_read_block(uint8_t block, uint8_t out[16])
+{
+    uint8_t cmd[2] = {0x30, block};
+    uint8_t back[64] = {0};
+    uint16_t bits = 0;
+    rfid_write(REG_BIT_FRAMING, 0x00);
+    if (!pcd_transceive(cmd, sizeof(cmd), back, &bits, 0)) return false;
+    if (bits < 144) return false; /* 16 data + 2 CRC */
+    memcpy(out, back, 16);
+    return true;
+}
+
+/** First printable run containing '|', trimmed; strips a 2-char NDEF lang tag. */
+static bool extract_record(const uint8_t *data, int n, char *out,
+                           size_t out_sz)
+{
+    int i = 0;
+    while (i < n) {
+        while (i < n && (data[i] < 0x20 || data[i] > 0x7E)) i++;
+        int start = i;
+        bool has_bar = false;
+        while (i < n && data[i] >= 0x20 && data[i] <= 0x7E) {
+            if (data[i] == '|') has_bar = true;
+            i++;
+        }
+        if (!has_bar || i - start < 3) continue;
+        int s = start;
+        int e = i;
+        while (s < e && data[s] == ' ') s++;
+        while (e > s && data[e - 1] == ' ') e--;
+        /* NDEF text records prefix the payload with a language code ("en"). */
+        if (e - s > 4 && data[s] >= 'a' && data[s] <= 'z' &&
+            data[s + 1] >= 'a' && data[s + 1] <= 'z' &&
+            data[s + 2] == '|') {
+            s += 2;
+        } else if (e - s > 5 && data[s] >= 'a' && data[s] <= 'z' &&
+                   data[s + 1] >= 'a' && data[s + 1] <= 'z' &&
+                   data[s + 2] >= 'A' && data[s + 2] <= 'Z') {
+            s += 2;
+        }
+        int len = e - s;
+        if (len >= 3 && (size_t)len < out_sz) {
+            memcpy(out, data + s, (size_t)len);
+            out[len] = '\0';
+            return true;
+        }
+    }
+    return false;
+}
+
+bool rfid_read_record(const uint8_t uid[4], uint8_t sak, char *out,
+                      size_t out_sz)
+{
+    if (!s_ready || !uid || !out || out_sz < 4) return false;
+    uint8_t data[64];
+    size_t got = 0;
+    bool any = false;
+
+    if (sak & 0x08) {
+        /* MIFARE Classic: try sector 1 blocks 4-6, then sector 0 blocks 1-2. */
+        const uint8_t sector1[] = {4, 5, 6};
+        const uint8_t sector0[] = {1, 2};
+        for (size_t k = 0; k < sizeof(k_default_keys) / 6 && got == 0; k++) {
+            if (!pcd_auth_keya(4, k_default_keys[k], uid)) {
+                pcd_stop_crypto();
+                continue;
+            }
+            for (size_t b = 0; b < sizeof(sector1); b++) {
+                uint8_t blk[16];
+                if (mifare_read_block(sector1[b], blk) &&
+                    got + 16 <= sizeof(data)) {
+                    memcpy(data + got, blk, 16);
+                    got += 16;
+                    any = true;
+                }
+            }
+            pcd_stop_crypto();
+        }
+        if (!any) {
+            for (size_t k = 0; k < sizeof(k_default_keys) / 6; k++) {
+                if (!pcd_auth_keya(1, k_default_keys[k], uid)) {
+                    pcd_stop_crypto();
+                    continue;
+                }
+                for (size_t b = 0; b < sizeof(sector0); b++) {
+                    uint8_t blk[16];
+                    if (mifare_read_block(sector0[b], blk) &&
+                        got + 16 <= sizeof(data)) {
+                        memcpy(data + got, blk, 16);
+                        got += 16;
+                        any = true;
+                    }
+                }
+                pcd_stop_crypto();
+            }
+        }
+    } else {
+        /* NTAG/Ultralight: 4 pages per read from page 4 through page 15. */
+        for (uint8_t page = 4; page < 16; page += 4) {
+            uint8_t cmd[2] = {0x30, page};
+            uint8_t back[64] = {0};
+            uint16_t bits = 0;
+            rfid_write(REG_BIT_FRAMING, 0x00);
+            if (pcd_transceive(cmd, sizeof(cmd), back, &bits, 0) &&
+                bits >= 128 && got + 16 <= sizeof(data)) {
+                memcpy(data + got, back, 16);
+                got += 16;
+                any = true;
+            }
+        }
+    }
+
+    if (!any) return false;
+    return extract_record(data, (int)got, out, out_sz);
+}
+
+bool rfid_read_uid(uint8_t uid[10], uint8_t *uid_len, uint8_t *sak)
 {
     if (!s_ready) return false;
 
@@ -269,10 +437,12 @@ bool rfid_read_uid(uint8_t uid[10], uint8_t *uid_len)
     if (!picc_request()) return false;
 
     uint8_t candidate[4];
+    uint8_t candidate_sak = 0;
     if (!picc_anticoll(candidate)) return false;
-    if (!picc_select(candidate)) return false;
+    if (!picc_select(candidate, &candidate_sak)) return false;
 
     memcpy(uid, candidate, 4);
-    *uid_len = 4;
+    if (uid_len) *uid_len = 4;
+    if (sak) *sak = candidate_sak;
     return true;
 }

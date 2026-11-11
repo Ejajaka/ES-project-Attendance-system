@@ -21,6 +21,7 @@
  * ESP32's network (the fusion server binds 0.0.0.0 on the dev PC).
  */
 
+#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -132,6 +133,8 @@ static volatile bool s_wifi_up = false;
 static volatile bool s_sync_now = false;
 /** Set when the STA gets an IP so the session is announced immediately. */
 static volatile bool s_announce_now = false;
+/** Last card UID, shown on the SoftAP registration page. */
+static char s_last_uid[16] = "";
 /** Set by the clear button (hold 2 s). */
 static volatile bool s_clear_now = false;
 /** microSD mounted successfully. */
@@ -390,15 +393,45 @@ static int post_rfid(const char *json)
     return http_post_json("/api/sessions/" PRESET_SESSION_ID "/rfid", json);
 }
 
-/** One card tap: map UID → roll/name, mirror to SD, queue for the server. */
-static void handle_card(const char *uid_hex)
+/** One card tap: card record → SD mapping → UID, mirror + queue for server. */
+static void handle_card(const char *uid_hex, const char *record)
 {
+    snprintf(s_last_uid, sizeof(s_last_uid), "%s", uid_hex);
     char roll[64];
     char name[64];
-    bool mapped = s_sd_ok &&
-                  storage_lookup_uid(uid_hex, roll, sizeof(roll), name,
-                                     sizeof(name));
-    if (!mapped) {
+    bool have_details = false;
+
+    /* 1. Details written on the card itself: "ROLL|NAME". */
+    if (record && strchr(record, '|')) {
+        char rec[96];
+        snprintf(rec, sizeof(rec), "%s", record);
+        char *bar = strchr(rec, '|');
+        if (bar) {
+            *bar = '\0';
+            char *r = rec;
+            char *n = bar + 1;
+            while (*r == ' ') r++;
+            while (*n == ' ') n++;
+            char *e = r + strlen(r);
+            while (e > r && e[-1] == ' ') *--e = '\0';
+            char *ne = n + strlen(n);
+            while (ne > n && ne[-1] == ' ') *--ne = '\0';
+            if (*r && *n) {
+                snprintf(roll, sizeof(roll), "%.63s", r);
+                snprintf(name, sizeof(name), "%.63s", n);
+                have_details = true;
+            }
+        }
+    }
+
+    /* 2. UID → roll/name mapping on the microSD card. */
+    if (!have_details && s_sd_ok) {
+        have_details = storage_lookup_uid(uid_hex, roll, sizeof(roll), name,
+                                          sizeof(name));
+    }
+
+    /* 3. Unknown card: still record it (never lose a tap). */
+    if (!have_details) {
         snprintf(roll, sizeof(roll), "RFID-%s", uid_hex);
         snprintf(name, sizeof(name), "Card %s", uid_hex);
     }
@@ -426,7 +459,7 @@ static void handle_card(const char *uid_hex)
     }
     s_sync_now = true;
 
-    if (mapped) {
+    if (have_details) {
         buzzer_beep(100);
     } else {
         buzzer_beep(60);
@@ -436,8 +469,11 @@ static void handle_card(const char *uid_hex)
     char line1[17];
     snprintf(line1, sizeof(line1), "%.16s", roll);
     lcd_show_temp("RFID", line1, 2500);
-    ESP_LOGI(TAG, "[rfid] uid=%s roll=%s name=%s queued=%d", uid_hex, roll,
-             name, queued);
+    ESP_LOGI(TAG, "[rfid] uid=%s roll=%s name=%s source=%s queued=%d",
+             uid_hex, roll, name,
+             record && strchr(record, '|') ? "card"
+                                           : (have_details ? "sd" : "uid"),
+             queued);
 }
 
 /** Poll the reader; a card left on the antenna is re-reported after 3 s. */
@@ -446,11 +482,12 @@ static void rfid_task(void *arg)
     (void)arg;
     uint8_t uid[10];
     uint8_t uid_len = 0;
+    uint8_t sak = 0;
     char last_uid[16] = "";
     TickType_t last_at = 0;
 
     for (;;) {
-        if (rfid_read_uid(uid, &uid_len) && uid_len > 0) {
+        if (rfid_read_uid(uid, &uid_len, &sak) && uid_len > 0) {
             char hex[16];
             size_t o = 0;
             for (uint8_t i = 0; i < uid_len && o + 2 < sizeof(hex); i++) {
@@ -461,7 +498,14 @@ static void rfid_task(void *arg)
             TickType_t now = xTaskGetTickCount();
             if (strcmp(hex, last_uid) != 0 ||
                 now - last_at > pdMS_TO_TICKS(3000)) {
-                handle_card(hex);
+                char record[96];
+                bool has_record = rfid_read_record(uid, sak, record,
+                                                    sizeof(record));
+                if (has_record) {
+                    ESP_LOGI(TAG, "[rfid] card record: %s (sak=0x%02x)",
+                             record, sak);
+                }
+                handle_card(hex, has_record ? record : NULL);
                 snprintf(last_uid, sizeof(last_uid), "%s", hex);
                 last_at = now;
             }
@@ -946,21 +990,110 @@ static esp_err_t node_config_post(httpd_req_t *req)
 /** GET /api/node — diagnostics: node, session, room, SSID, server, clock. */
 static esp_err_t node_get(httpd_req_t *req)
 {
-    char json[256];
+    char json[320];
     snprintf(json, sizeof(json),
              "{\"nodeId\":\"%s\",\"sessionId\":\"%s\",\"roomId\":\"%s\","
-             "\"ssid\":\"%s\",\"serverUrl\":\"%s\",\"unix\":%ld}",
+             "\"ssid\":\"%s\",\"serverUrl\":\"%s\",\"unix\":%ld,"
+             "\"lastUid\":\"%s\",\"sd\":%s}",
              NODE_ID, PRESET_SESSION_ID, PRESET_ROOM_ID, AP_SSID, s_server_url,
-             (long)time(NULL));
+             (long)time(NULL), s_last_uid, s_sd_ok ? "true" : "false");
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, json, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+/** Decode a URL query value in place (%xx and '+'). */
+static void url_decode(char *s)
+{
+    for (char *w = s, *r = s; ; ++w, ++r) {
+        if (*r == '+') {
+            *w = ' ';
+        } else if (*r == '%' && r[1] && r[2]) {
+            char hex[3] = {r[1], r[2], 0};
+            *w = (char)strtol(hex, NULL, 16);
+            r += 2;
+        } else {
+            *w = *r;
+        }
+        if (!*r) break;
+    }
+}
+
+/**
+ * SoftAP card registration page: tap a card, open http://192.168.4.1/ on any
+ * phone joined to `atlas`, and bind that UID to a roll/name. The binding is
+ * written to /sdcard/rfid.csv (when present) and mirrored in NVS, so UID-only
+ * cards can still mark attendance with full details.
+ */
+static esp_err_t node_index_get(httpd_req_t *req)
+{
+    char html[1200];
+    snprintf(html, sizeof(html),
+             "<!doctype html><meta name=viewport content='width=device-width'>"
+             "<title>Shusseki card</title><body style='font-family:sans-serif;"
+             "max-width:420px;margin:24px auto;padding:0 12px'>"
+             "<h2>Shusseki card</h2>"
+             "<p>Last card UID: <b>%s</b></p>"
+             "<form method='get' action='/api/node/rfid'>"
+             "<p>UID<br><input name='uid' value='%s' style='width:100%%'></p>"
+             "<p>Roll number<br><input name='roll' style='width:100%%'></p>"
+             "<p>Name<br><input name='name' style='width:100%%'></p>"
+             "<button type='submit'>Save card</button></form>"
+             "<p style='color:#666'>Tap a card, reload this page, then save "
+             "its roll and name. Taps after that mark attendance with these "
+             "details.</p></body>",
+             s_last_uid[0] ? s_last_uid : "(none)", s_last_uid);
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+/** GET /api/node/rfid?uid=..&roll=..&name=.. — bind a card. */
+static esp_err_t node_rfid_get(httpd_req_t *req)
+{
+    char query[384];
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) {
+        send_status(req, "400 Bad Request");
+        return ESP_OK;
+    }
+    char uid[32], roll[64], name[64];
+    if (httpd_query_key_value(query, "uid", uid, sizeof(uid)) != ESP_OK ||
+        httpd_query_key_value(query, "roll", roll, sizeof(roll)) != ESP_OK ||
+        httpd_query_key_value(query, "name", name, sizeof(name)) != ESP_OK) {
+        send_status(req, "400 Bad Request");
+        return ESP_OK;
+    }
+    url_decode(uid);
+    url_decode(roll);
+    url_decode(name);
+    for (char *p = uid; *p; p++) *p = (char)toupper((unsigned char)*p);
+    if (!*uid || !*roll || !*name) {
+        send_status(req, "400 Bad Request");
+        return ESP_OK;
+    }
+    bool saved = storage_add_mapping(uid, roll, name);
+    ESP_LOGI(TAG, "[rfid] bind uid=%s roll=%s name=%s saved=%d", uid, roll,
+             name, saved);
+    char html[512];
+    snprintf(html, sizeof(html),
+             "<!doctype html><meta name=viewport content='width=device-width'>"
+             "<body style='font-family:sans-serif;max-width:420px;margin:24px "
+             "auto'><h2>%s</h2><p>%s &rarr; %s (%s)</p>"
+             "<p><a href='/'>Register another card</a></p></body>",
+             saved ? "Card saved" : "Save failed", uid, roll, name);
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
+    lcd_show_temp("Card", roll, 2500);
+    buzzer_beep(100);
     return ESP_OK;
 }
 
 static const httpd_uri_t node_api_uris[] = {
     {.uri = "/api/node/time", .method = HTTP_POST, .handler = node_time_post},
     {.uri = "/api/node/config", .method = HTTP_POST, .handler = node_config_post},
+    {.uri = "/api/node/rfid", .method = HTTP_GET, .handler = node_rfid_get},
     {.uri = "/api/node", .method = HTTP_GET, .handler = node_get},
+    {.uri = "/", .method = HTTP_GET, .handler = node_index_get},
 };
 
 static void node_api_init(void)
@@ -971,8 +1104,8 @@ static void node_api_init(void)
         for (size_t i = 0; i < sizeof(node_api_uris) / sizeof(node_api_uris[0]); i++) {
             httpd_register_uri_handler(s_httpd, &node_api_uris[i]);
         }
-        ESP_LOGI(TAG, "node API on SoftAP port 80: /api/node/time /api/node/config "
-                      "/api/node");
+        ESP_LOGI(TAG, "node API on SoftAP port 80: / (card registration), "
+                      "/api/node/time /api/node/config /api/node/rfid /api/node");
     } else {
         ESP_LOGW(TAG, "node API start failed");
     }

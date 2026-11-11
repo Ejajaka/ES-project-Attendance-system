@@ -121,6 +121,34 @@ once the ESP32 joins `Shusseki-Room`.
 | CLEAR button (hold) | delete pending queue only |
 | Server offline | queue stays on SD; next sync retries |
 
+## Card details (name + roll)
+
+The reader takes details from the card itself when they are written on it.
+Two layouts are supported (ASCII text, a `ROLL|NAME` run somewhere in the
+data):
+
+1. **MIFARE Classic** — sector 1, blocks 4–6, key A default
+   `FF FF FF FF FF FF` (fallbacks: sector 0 blocks 1–2, and the common keys
+   `A0A1…`, `D3F7…`, `00…`). Write e.g. `BL.SC.U4CSE24043|Roshna George`.
+2. **NTAG / Ultralight** — pages 4–15, raw text or an NDEF text record
+   containing `ROLL|NAME`.
+
+If the card has no record (UID-only cards are common), register it once:
+
+1. Tap the card (the last UID is shown on the LCD and kept by the node).
+2. Join the ESP32's open **`atlas`** WiFi from a phone/PC.
+3. Open **http://192.168.4.1/** and save the roll + name for that UID.
+4. Tap the same card again — it now marks attendance with those details.
+
+The binding is written to `/sdcard/rfid.csv` **and** mirrored in NVS, so it
+still works if the microSD is missing. Unknown cards are never lost: they are
+recorded as `RFID-<UID>` / `Card <UID>` with a double beep, and can be named
+later.
+
+Attendance rows are non-expiring (only **CLEAR ATTENDANCE** resets them). The
+server auto-enrolls the name/roll into the roster on the first tap and the
+register/CSV show them.
+
 The server endpoint is `POST /api/sessions/<id>/rfid` with:
 
 ```json

@@ -12,7 +12,10 @@
 #include "driver/sdspi_host.h"
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
+#include "nvs.h"
 #include "sdmmc_cmd.h"
+
+#define NVS_RFID_NS "rfid"
 
 static const char *TAG = "sd";
 
@@ -90,33 +93,87 @@ static char *trim(char *s)
 bool storage_lookup_uid(const char *uid, char *roll, size_t roll_sz,
                         char *name, size_t name_sz)
 {
-    if (!s_ok || !uid || !*uid) return false;
-    FILE *f = fopen(SD_MAP, "r");
-    if (!f) return false;
+    if (!uid || !*uid) return false;
 
-    char line[192];
     bool found = false;
-    while (fgets(line, sizeof(line), f)) {
-        char *l = trim(line);
-        if (!*l || l[0] == '#') continue;
-        char *c1 = strchr(l, ',');
-        if (!c1) continue;
-        *c1 = '\0';
-        char *c2 = strchr(c1 + 1, ',');
-        if (!c2) continue;
-        *c2 = '\0';
-        const char *map_uid = trim(l);
-        const char *map_roll = trim(c1 + 1);
-        const char *map_name = trim(c2 + 1);
-        if (strcasecmp(map_uid, "uid") == 0) continue; /* header */
-        if (strcasecmp(map_uid, uid) != 0) continue;
-        if (roll_sz) snprintf(roll, roll_sz, "%s", map_roll);
-        if (name_sz) snprintf(name, name_sz, "%s", map_name);
-        found = true;
-        break;
+    FILE *f = s_ok ? fopen(SD_MAP, "r") : NULL;
+    if (f) {
+        char line[192];
+        while (fgets(line, sizeof(line), f)) {
+            char *l = trim(line);
+            if (!*l || l[0] == '#') continue;
+            char *c1 = strchr(l, ',');
+            if (!c1) continue;
+            *c1 = '\0';
+            char *c2 = strchr(c1 + 1, ',');
+            if (!c2) continue;
+            *c2 = '\0';
+            const char *map_uid = trim(l);
+            const char *map_roll = trim(c1 + 1);
+            const char *map_name = trim(c2 + 1);
+            if (strcasecmp(map_uid, "uid") == 0) continue; /* header */
+            if (strcasecmp(map_uid, uid) != 0) continue;
+            /* Keep scanning: a later line is a re-registration and wins. */
+            if (roll_sz) snprintf(roll, roll_sz, "%.*s", (int)(roll_sz - 1), map_roll);
+            if (name_sz) snprintf(name, name_sz, "%.*s", (int)(name_sz - 1), map_name);
+            found = true;
+        }
+        fclose(f);
     }
-    fclose(f);
+    if (found) return true;
+
+    /* NVS mirror: registration survives a missing microSD card. */
+    nvs_handle_t h;
+    if (nvs_open(NVS_RFID_NS, NVS_READONLY, &h) == ESP_OK) {
+        char key[16];
+        snprintf(key, sizeof(key), "u_%s", uid);
+        char val[160];
+        size_t len = sizeof(val);
+        if (nvs_get_str(h, key, val, &len) == ESP_OK) {
+            char *bar = strchr(val, '|');
+            if (bar) {
+                *bar = '\0';
+                if (roll_sz) snprintf(roll, roll_sz, "%.*s", (int)(roll_sz - 1), val);
+                if (name_sz) snprintf(name, name_sz, "%.*s", (int)(name_sz - 1), bar + 1);
+                found = true;
+            }
+        }
+        nvs_close(h);
+    }
     return found;
+}
+
+bool storage_add_mapping(const char *uid, const char *roll, const char *name)
+{
+    if (!uid || !*uid || !roll || !*roll || !name || !*name) return false;
+    bool saved = false;
+
+    if (s_ok) {
+        FILE *f = fopen(SD_MAP, "a");
+        if (f) {
+            fseek(f, 0, SEEK_END);
+            if (ftell(f) == 0) fputs("uid,roll,name\n", f);
+            fprintf(f, "%s,%s,%s\n", uid, roll, name);
+            fclose(f);
+            saved = true;
+            ESP_LOGI(TAG, "mapping %s -> %s,%s written to SD", uid, roll, name);
+        }
+    }
+
+    /* Always keep an NVS copy: a missing card must not lose the binding. */
+    nvs_handle_t h;
+    if (nvs_open(NVS_RFID_NS, NVS_READWRITE, &h) == ESP_OK) {
+        char key[16];
+        snprintf(key, sizeof(key), "u_%s", uid);
+        char val[160];
+        snprintf(val, sizeof(val), "%s|%s", roll, name);
+        if (nvs_set_str(h, key, val) == ESP_OK && nvs_commit(h) == ESP_OK) {
+            saved = true;
+            ESP_LOGI(TAG, "mapping %s -> %s,%s saved to NVS", uid, roll, name);
+        }
+        nvs_close(h);
+    }
+    return saved;
 }
 
 static void csv_escape(const char *in, char *out, size_t out_sz)

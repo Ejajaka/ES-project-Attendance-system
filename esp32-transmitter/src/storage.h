@@ -28,6 +28,13 @@ bool storage_ok(void);
 bool storage_lookup_uid(const char *uid, char *roll, size_t roll_sz,
                         char *name, size_t name_sz);
 
+/**
+ * Bind a UID to a roll/name. Writes /sdcard/rfid.csv when the card is mounted
+ * and always mirrors the binding into NVS, so registration still works on a
+ * board without a microSD card.
+ */
+bool storage_add_mapping(const char *uid, const char *roll, const char *name);
+
 /** Append one tap to attendance.csv (best-effort local mirror). */
 void storage_log_scan(int64_t at_ms, const char *uid, const char *roll,
                       const char *name);
