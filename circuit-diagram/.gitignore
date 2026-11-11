@@ -1,0 +1,5 @@
+# KiCad local state
+*.lck
+.history/
+*.bak-*
+*.kicad_prl
