@@ -207,10 +207,16 @@ export class MemoryStore implements Store {
 
   ensureStudent(
     sessionId: string,
-    student: { studentId: string; name?: string; deviceId?: string },
+    student: {
+      studentId: string;
+      name?: string;
+      deviceId?: string;
+      rfidUid?: string;
+    },
   ): void {
     const studentId = student.studentId.trim();
     if (!studentId) return;
+    const rfidUid = student.rfidUid?.trim().toUpperCase() || undefined;
     const list = this.rosters.get(sessionId) ?? [];
     const i = list.findIndex((s) => s.studentId.trim() === studentId);
     if (i < 0) {
@@ -218,6 +224,7 @@ export class MemoryStore implements Store {
         studentId,
         name: student.name?.trim() || studentId,
         deviceId: student.deviceId,
+        rfidUid,
       });
       this.rosters.set(sessionId, list);
       return;
@@ -232,7 +239,14 @@ export class MemoryStore implements Store {
     if (student.deviceId && cur.deviceId !== student.deviceId) {
       next.deviceId = student.deviceId;
     }
-    if (next.name !== cur.name || next.deviceId !== cur.deviceId) {
+    if (rfidUid && cur.rfidUid !== rfidUid) {
+      next.rfidUid = rfidUid;
+    }
+    if (
+      next.name !== cur.name ||
+      next.deviceId !== cur.deviceId ||
+      next.rfidUid !== cur.rfidUid
+    ) {
       list[i] = next;
       this.rosters.set(sessionId, list);
     }
@@ -242,6 +256,18 @@ export class MemoryStore implements Store {
       for (let j = 0; j < list.length; j++) {
         if (j !== i && list[j]?.deviceId === student.deviceId) {
           list[j] = { ...list[j]!, deviceId: undefined };
+        }
+      }
+      this.rosters.set(sessionId, list);
+    }
+    // One card = one student: a later binding wins over a stale one.
+    if (rfidUid) {
+      for (let j = 0; j < list.length; j++) {
+        if (
+          j !== i &&
+          (list[j]?.rfidUid ?? "").trim().toUpperCase() === rfidUid
+        ) {
+          list[j] = { ...list[j]!, rfidUid: undefined };
         }
       }
       this.rosters.set(sessionId, list);

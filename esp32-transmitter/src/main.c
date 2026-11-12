@@ -99,6 +99,15 @@ static esp_netif_t *s_ap_netif = NULL;
 
 #define TOTP_STEP_S 30
 
+/*
+ * This UID-only token does not answer SELECT, so its written NDEF text cannot
+ * be read by the RC522. Bind it here (NVS) until a readable NTAG is used; the
+ * SoftAP card page can override this mapping at runtime.
+ */
+#define DEFAULT_BIND_UID "16FA551F"
+#define DEFAULT_BIND_ROLL "BL.SC.U4CSE24043"
+#define DEFAULT_BIND_NAME "Roshna George"
+
 /** Green LED: on when the STA is connected to the classroom Wi-Fi. */
 #define LED_GPIO 25
 /** How often the LCD refreshes the live attendance count from the server. */
@@ -176,6 +185,8 @@ static uint32_t s_lcd_temp_until_ms = 0;
 #define CLOCK_SYNC_TOL_S 90
 
 static int http_post_json(const char *path, const char *body);
+static int http_post_json_resp(const char *path, const char *body, char *out,
+                               size_t outsz);
 
 static uint32_t now_ms(void)
 {
@@ -405,6 +416,24 @@ static int post_rfid(const char *json)
     return http_post_json("/api/sessions/" PRESET_SESSION_ID "/rfid", json);
 }
 
+/** Extract a string field from the small JSON responses we consume. */
+static bool json_get(const char *json, const char *key, char *out, size_t outsz)
+{
+    if (!json || !key || !out || outsz == 0) return false;
+    char needle[40];
+    snprintf(needle, sizeof(needle), "\"%s\":\"", key);
+    const char *p = strstr(json, needle);
+    if (!p) return false;
+    p += strlen(needle);
+    size_t o = 0;
+    while (*p && *p != '"' && o + 1 < outsz) {
+        if (*p == '\\' && p[1]) p++;
+        out[o++] = *p++;
+    }
+    out[o] = '\0';
+    return o > 0;
+}
+
 /** One card tap: card record → SD mapping → UID, mirror + queue for server. */
 static void handle_card(const char *uid_hex, const char *record)
 {
@@ -457,13 +486,10 @@ static void handle_card(const char *uid_hex, const char *record)
     }
 
     int64_t at = (int64_t)time(NULL) * 1000;
-    if (s_sd_ok) {
-        storage_log_scan(at, uid_hex, roll, name);
-    }
 
     char er[96];
     char en[96];
-    char json[320];
+    char json[384];
     json_escape(roll, er, sizeof(er));
     json_escape(name, en, sizeof(en));
     snprintf(json, sizeof(json),
@@ -471,13 +497,42 @@ static void handle_card(const char *uid_hex, const char *record)
              "\"at\":%lld}",
              uid_hex, er, en, (long long)at);
 
-    bool queued = s_sd_ok && storage_enqueue(json);
-    if (!queued) {
-        /* No SD card: still work online, directly. */
-        int status = post_rfid(json);
-        ESP_LOGI(TAG, "[rfid] direct upload -> %d", status);
+    /* Online: the server's phone-entered UID mapping is authoritative and its
+       response carries the final name/roll for the LCD. Offline: queue on SD
+       (or keep the local mapping) and retry later. */
+    bool queued = false;
+    bool server_matched = false;
+    if (s_wifi_up) {
+        char resp[512];
+        int status = http_post_json_resp(
+            "/api/sessions/" PRESET_SESSION_ID "/rfid", json, resp,
+            sizeof(resp));
+        ESP_LOGI(TAG, "[rfid] server -> %d", status);
+        if (status >= 200 && status < 300) {
+            char sname[64];
+            char sroll[64];
+            char ssource[16];
+            if (json_get(resp, "name", sname, sizeof(sname))) {
+                snprintf(name, sizeof(name), "%s", sname);
+            }
+            if (json_get(resp, "studentId", sroll, sizeof(sroll))) {
+                snprintf(roll, sizeof(roll), "%s", sroll);
+            }
+            if (json_get(resp, "source", ssource, sizeof(ssource))) {
+                server_matched = strcmp(ssource, "rfid") != 0;
+            }
+            have_details = server_matched;
+        } else {
+            queued = s_sd_ok && storage_enqueue(json);
+            s_sync_now = queued;
+        }
+    } else {
+        queued = s_sd_ok && storage_enqueue(json);
+        s_sync_now = queued;
     }
-    s_sync_now = true;
+    if (s_sd_ok) {
+        storage_log_scan(at, uid_hex, roll, name);
+    }
 
     if (have_details) {
         buzzer_beep(100);
@@ -492,11 +547,12 @@ static void handle_card(const char *uid_hex, const char *record)
     snprintf(line0, sizeof(line0), "%.16s", name);
     snprintf(line1, sizeof(line1), "%.16s", roll);
     lcd_show_temp(line0, line1, 4000);
+    const char *source = (record && strpbrk(record, "|,"))
+                             ? "card"
+                             : server_matched ? "server"
+                                              : (have_details ? "local" : "uid");
     ESP_LOGI(TAG, "[rfid] uid=%s roll=%s name=%s source=%s queued=%d",
-             uid_hex, roll, name,
-             record && strchr(record, '|') ? "card"
-                                           : (have_details ? "sd" : "uid"),
-             queued);
+             uid_hex, roll, name, source, queued);
 }
 
 /** Poll the reader; a card left on the antenna is re-reported after 3 s. */
@@ -744,6 +800,45 @@ static int http_post_json(const char *path, const char *body)
     esp_http_client_set_post_field(c, body, strlen(body));
     esp_err_t err = esp_http_client_perform(c);
     int status = (err == ESP_OK) ? esp_http_client_get_status_code(c) : -1;
+    esp_http_client_cleanup(c);
+    return status;
+}
+
+/** POST JSON and capture the response body (for the RFID UID lookup). */
+static int http_post_json_resp(const char *path, const char *body, char *out,
+                               size_t outsz)
+{
+    if (out && outsz) out[0] = '\0';
+    if (strlen(s_server_url) == 0) return 0;
+    char url[256];
+    snprintf(url, sizeof(url), "%s%s", s_server_url, path);
+
+    esp_http_client_config_t cfg = {
+        .url = url,
+        .method = HTTP_METHOD_POST,
+        .timeout_ms = 3000,
+    };
+    esp_http_client_handle_t c = esp_http_client_init(&cfg);
+    if (!c) return -1;
+    esp_http_client_set_header(c, "Content-Type", "application/json");
+
+    int status = -1;
+    size_t total = 0;
+    if (esp_http_client_open(c, strlen(body)) == ESP_OK) {
+        esp_http_client_write(c, body, strlen(body));
+        esp_http_client_fetch_headers(c);
+        if (out && outsz > 1) {
+            int n;
+            while ((n = esp_http_client_read(c, out + total,
+                                             (int)(outsz - 1 - total))) > 0) {
+                total += (size_t)n;
+                if (total >= outsz - 1) break;
+            }
+        }
+        status = esp_http_client_get_status_code(c);
+        esp_http_client_close(c);
+    }
+    if (out && outsz) out[total] = '\0';
     esp_http_client_cleanup(c);
     return status;
 }
@@ -1649,6 +1744,18 @@ void app_main(void)
     }
 
     config_load_from_nvs();
+
+    /* Bind the demo UID once (NVS). The SoftAP page can overwrite it later. */
+    char bind_roll[64];
+    char bind_name[64];
+    if (!storage_lookup_uid(DEFAULT_BIND_UID, bind_roll, sizeof(bind_roll),
+                            bind_name, sizeof(bind_name))) {
+        if (storage_add_mapping(DEFAULT_BIND_UID, DEFAULT_BIND_ROLL,
+                                DEFAULT_BIND_NAME)) {
+            ESP_LOGI(TAG, "[rfid] bound %s -> %s, %s", DEFAULT_BIND_UID,
+                     DEFAULT_BIND_ROLL, DEFAULT_BIND_NAME);
+        }
+    }
 
     led_init();
 

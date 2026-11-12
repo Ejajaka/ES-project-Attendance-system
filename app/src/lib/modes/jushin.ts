@@ -19,6 +19,8 @@ export interface JushinConfig {
   studentId?: string;
   /** Optional student name (auto-enrolls the attendance roster). */
   studentName?: string;
+  /** Optional RFID card UID entered on the phone (server UID mapping). */
+  rfidUid?: string;
   roomId: string;
   sessionId: string;
   soshinSsid: string;
@@ -174,6 +176,7 @@ export class JushinController {
       deviceId: this.config.deviceId,
       studentId: this.config.studentId || undefined,
       studentName: this.config.studentName || undefined,
+      rfidUid: this.config.rfidUid || undefined,
       mode: "jushin",
       roomId: this.config.roomId,
       sessionId: this.config.sessionId,

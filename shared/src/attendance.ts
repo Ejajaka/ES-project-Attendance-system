@@ -15,6 +15,8 @@ export const StudentSchema = z.object({
   name: z.string().min(1),
   /** Optional stable phone id; when set, the phone is matched by id, else by studentId. */
   deviceId: z.string().optional(),
+  /** Optional RFID card UID entered by the student on the phone. */
+  rfidUid: z.string().optional(),
 });
 export type Student = z.infer<typeof StudentSchema>;
 

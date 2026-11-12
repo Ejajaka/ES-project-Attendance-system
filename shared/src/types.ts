@@ -81,6 +81,8 @@ export const DeviceReportSchema = z.object({
   studentId: z.string().optional(),
   /** Optional human name reported by the phone (auto-enrolls the roster). */
   studentName: z.string().optional(),
+  /** Optional RFID card UID entered during phone enrollment. */
+  rfidUid: z.string().optional(),
   mode: ModeSchema,
   roomId: z.string(),
   sessionId: z.string(),

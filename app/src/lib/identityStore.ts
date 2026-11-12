@@ -12,6 +12,8 @@ import * as FileSystem from "expo-file-system";
 export interface StudentIdentity {
   studentId: string;
   studentName: string;
+  /** RFID card UID entered by the student (used by the room reader). */
+  rfidUid?: string;
   /** When the identity was first enrolled (ms epoch). */
   enrolledAt: number;
 }
@@ -30,6 +32,7 @@ export async function loadIdentity(): Promise<StudentIdentity | null> {
     return {
       studentId,
       studentName,
+      rfidUid: parsed.rfidUid?.trim().toUpperCase() || undefined,
       enrolledAt: parsed.enrolledAt ?? Date.now(),
     };
   } catch {
@@ -43,6 +46,7 @@ export async function saveIdentity(identity: StudentIdentity): Promise<void> {
     JSON.stringify({
       studentId: identity.studentId.trim(),
       studentName: identity.studentName.trim(),
+      rfidUid: identity.rfidUid?.trim().toUpperCase() || undefined,
       enrolledAt: identity.enrolledAt,
     }),
   );

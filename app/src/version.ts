@@ -9,6 +9,6 @@
 export const APP_VERSION = "0.1.0";
 
 /** Increment on every patch shipped to a device. */
-export const BUILD = 40;
+export const BUILD = 41;
 
 export const VERSION = `v${APP_VERSION}+${BUILD}`;

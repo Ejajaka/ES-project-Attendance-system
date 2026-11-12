@@ -313,18 +313,25 @@ static bool picc_select(uint8_t sel, const uint8_t part[4], uint8_t part_len,
     }
     cmd[n++] = bcc;
 
-    uint8_t back[64] = {0};
-    uint16_t bits = 0;
-    rfid_write(REG_BIT_FRAMING, 0x00);
-    if (!pcd_transceive(cmd, (uint8_t)n, back, &bits, 0)) {
-        return false;
+    for (int attempt = 0; attempt < 3; attempt++) {
+        uint8_t back[64] = {0};
+        uint16_t bits = 0;
+        rfid_write(REG_BIT_FRAMING, 0x00);
+        bool ok = pcd_transceive(cmd, (uint8_t)n, back, &bits, 0);
+        if (!ok) {
+            ESP_LOGW(TAG, "[select] attempt=%d failed err=0x%02x irq=0x%02x",
+                     attempt, rfid_read(REG_ERROR), rfid_read(REG_COM_IRQ));
+            vTaskDelay(pdMS_TO_TICKS(5));
+            continue;
+        }
+        ESP_LOGI(TAG, "[select] bits=%u sak=0x%02x", bits, back[0]);
+        /* Some clones/tags append extra bytes; anything >= the 3-byte SAK+CRC
+           is enough to know the tag accepted the select. */
+        if (bits < 24) return false;
+        if (sak) *sak = back[0];
+        return true;
     }
-    ESP_LOGI(TAG, "[select] bits=%u sak=0x%02x", bits, back[0]);
-    /* Some clones/tags append extra bytes; anything >= the 3-byte SAK+CRC is
-       enough to know the tag accepted the select. */
-    if (bits < 24) return false;
-    if (sak) *sak = back[0];
-    return true;
+    return false;
 }
 
 /* ---------------------------------------------------- MIFARE card records */

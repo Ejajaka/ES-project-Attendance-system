@@ -107,6 +107,8 @@ export default function JushinScreen({
   const [identity, setIdentity] = useState<StudentIdentity | null>(null);
   const [enrollId, setEnrollId] = useState(settings.studentId ?? "");
   const [enrollName, setEnrollName] = useState(settings.studentName ?? "");
+  const [enrollRfid, setEnrollRfid] = useState("");
+  const [editing, setEditing] = useState(false);
   const [enrollMsg, setEnrollMsg] = useState<string | null>(null);
   const [traceReset, setTraceReset] = useState(0);
   const [signalVerdict, setSignalVerdict] = useState<boolean | null>(null);
@@ -138,6 +140,7 @@ export default function JushinScreen({
       setIdentity(id);
       setEnrollId(id.studentId);
       setEnrollName(id.studentName);
+      setEnrollRfid(id.rfidUid ?? "");
     });
   }, []);
 
@@ -215,7 +218,12 @@ export default function JushinScreen({
       setEnrollMsg(`Fingerprint failed: ${bio.reason ?? "try again"}`);
       return;
     }
-    const next = { studentId, studentName, enrolledAt: Date.now() };
+    const next = {
+      studentId,
+      studentName,
+      rfidUid: enrollRfid.trim().toUpperCase() || undefined,
+      enrolledAt: Date.now(),
+    };
     try {
       await saveIdentity(next);
     } catch {
@@ -226,6 +234,7 @@ export default function JushinScreen({
     setBio(`${bio.kind} (ok)`);
     setBioOk(true);
     setEnrollMsg(null);
+    setEditing(false);
   };
 
   /**
@@ -287,6 +296,7 @@ export default function JushinScreen({
         deviceId: persistentDeviceId,
         studentId: identity?.studentId || settings.studentId || undefined,
         studentName: identity?.studentName || settings.studentName || undefined,
+        rfidUid: identity?.rfidUid || undefined,
         roomId: settings.roomId,
         sessionId: settings.sessionId,
         soshinSsid: ssid,
@@ -476,7 +486,7 @@ export default function JushinScreen({
       </View>
       <ScrollView className="flex-1">
         <View className="gap-4 p-4 pb-8">
-          {!identity ? (
+          {!identity || editing ? (
             <Card>
               <CardHeader>
                 <CardTitle>Enroll this phone</CardTitle>
@@ -501,6 +511,14 @@ export default function JushinScreen({
                   onChangeText={setEnrollName}
                   placeholder="Your name"
                 />
+                <Label>RFID card UID (optional)</Label>
+                <Input
+                  value={enrollRfid}
+                  onChangeText={setEnrollRfid}
+                  placeholder="e.g. 16FA551F"
+                  autoCapitalize="characters"
+                  autoCorrect={false}
+                />
                 {enrollMsg ? (
                   <Text className="text-sm text-destructive">{enrollMsg}</Text>
                 ) : null}
@@ -513,10 +531,20 @@ export default function JushinScreen({
             <View className="flex-row items-center justify-between rounded-lg border border-border p-3">
               <Text className="text-sm text-muted-foreground">
                 {identity.studentName} · {identity.studentId}
+                {identity.rfidUid ? ` · RFID ${identity.rfidUid}` : ""}
               </Text>
-              <Badge variant="secondary">
-                <Text>enrolled</Text>
-              </Badge>
+              <View className="flex-row items-center gap-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onPress={() => setEditing(true)}
+                >
+                  <Text>Edit</Text>
+                </Button>
+                <Badge variant="secondary">
+                  <Text>enrolled</Text>
+                </Badge>
+              </View>
             </View>
           )}
           {/* PRESENCE — verdict + honest "last seen" countdown */}

@@ -233,6 +233,69 @@ test("RFID tap marks attendance and auto-enrolls the card holder", async () => {
   expect(row.name).toBe("Card Holder");
 });
 
+test("phone-entered RFID UID resolves the student name and roll", async () => {
+  const app = makeApp();
+  await app.request("/api/sessions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId: "s1", roomId: "r1", secret: SECRET_B64 }),
+  });
+  const roster = await app.request("/api/sessions/s1/roster", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      students: [
+        { studentId: "bl.1", name: "Roshna George", rfidUid: "16FA551F" },
+      ],
+    }),
+  });
+  expect(roster.status).toBe(201);
+
+  const tap = await app.request("/api/sessions/s1/rfid", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ uid: "16fa551f", at: ALIGNED }),
+  });
+  expect(tap.status).toBe(201);
+  const resolved = await tap.json();
+  expect(resolved.studentId).toBe("bl.1");
+  expect(resolved.name).toBe("Roshna George");
+  expect(resolved.source).toBe("roster");
+
+  const sheet = await (await app.request("/api/sessions/s1/attendance")).json();
+  const row = sheet.rows.find((r: { studentId: string }) => r.studentId === "bl.1");
+  expect(row.present).toBe(true);
+  expect(row.name).toBe("Roshna George");
+});
+
+test("a phone report with rfidUid binds the card on the roster", async () => {
+  const app = makeApp();
+  await app.request("/api/sessions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId: "s1", roomId: "r1", secret: SECRET_B64 }),
+  });
+  const code = generateTOTP(SECRET, ALIGNED, { step: 30 });
+  await app.request("/api/reports", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      ...reportPayload(code),
+      studentId: "bl.2",
+      studentName: "Ada Lovelace",
+      rfidUid: "a1b2c3d4",
+      deviceId: "phone-ada",
+    }),
+  });
+  const roster = await (
+    await app.request("/api/sessions/s1/roster")
+  ).json();
+  const student = roster.students.find(
+    (s: { studentId: string }) => s.studentId === "bl.2",
+  );
+  expect(student.rfidUid).toBe("A1B2C3D4");
+});
+
 test("attendance endpoints 404 for unknown sessions; bad roster 400s", async () => {
   const app = makeApp();
   expect((await app.request("/api/sessions/nope/attendance")).status).toBe(404);

@@ -64,14 +64,14 @@ function attendanceHtml(sheet: AttendanceSheet, paused = false): string {
   const script = [
     "var ROSTER_URL = location.pathname.replace('/attendance/','/api/sessions/') + '/roster';",
     "function loadRoster(){ fetch(ROSTER_URL).then(function(r){return r.json();}).then(function(j){",
-    "  document.getElementById('roster').value = (j.students||[]).map(function(s){return s.studentId+','+s.name+(s.deviceId?','+s.deviceId:'');}).join(String.fromCharCode(10));",
+    "  document.getElementById('roster').value = (j.students||[]).map(function(s){return [s.studentId,s.name,s.deviceId||'',s.rfidUid||''].join(',').replace(/,+$/,'');}).join(String.fromCharCode(10));",
     "}).catch(function(){}); }",
     "loadRoster();",
     "function saveRoster(e){ e.preventDefault();",
     "  var lines = document.getElementById('roster').value.split(String.fromCharCode(10));",
     "  var students = lines.map(function(l){return l.trim();}).filter(Boolean).map(function(l){",
-    "    var p = l.split(','); var studentId=(p[0]||'').trim(); var name=(p[1]||'').trim(); var deviceId=(p[2]||'').trim();",
-    "    var s = { studentId: studentId, name: name }; if (deviceId) { s.deviceId = deviceId; } return s; });",
+  "    var p = l.split(','); var studentId=(p[0]||'').trim(); var name=(p[1]||'').trim(); var deviceId=(p[2]||'').trim(); var rfidUid=(p[3]||'').trim().toUpperCase();",
+  "    var s = { studentId: studentId, name: name }; if (deviceId) { s.deviceId = deviceId; } if (rfidUid) { s.rfidUid = rfidUid; } return s; });",
     "  fetch(ROSTER_URL,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({students:students})})",
     "    .then(function(){ location.reload(); });",
     "  return false; }",
@@ -118,7 +118,7 @@ ${
 </table>
 ${unrostered ? `<h3>Unrostered devices seen</h3><ul>${unrostered}</ul>` : ""}
 <form onsubmit="return saveRoster(event)">
-  <p>Roster — one <code>roll,name</code> per line:</p>
+  <p>Roster — one <code>roll,name[,deviceId[,rfidUid]]</code> per line:</p>
   <textarea id="roster"></textarea>
   <p><button type="submit">SAVE ROSTER</button></p>
 </form>
@@ -298,6 +298,7 @@ export function createApp(store: Store, sessions: SessionRegistry): Hono {
         studentId: report.studentId,
         name: report.studentName?.trim() || undefined,
         deviceId: report.deviceId,
+        rfidUid: report.rfidUid?.trim().toUpperCase() || undefined,
       });
     }
     // Biometric is the attendance gate: a failed check is not present even if
@@ -605,23 +606,40 @@ export function createApp(store: Store, sessions: SessionRegistry): Hono {
     }
     const uid =
       typeof body.uid === "string" ? body.uid.trim().toUpperCase() : "";
-    const studentId =
-      (typeof body.studentId === "string" && body.studentId.trim()) ||
-      (uid ? `RFID-${uid}` : "");
-    if (!studentId) {
-      return c.json({ error: "studentId or uid is required" }, 400);
+    if (!uid) {
+      return c.json({ error: "uid is required" }, 400);
     }
-    const name =
+    // The phone-entered UID mapping is authoritative: look it up first.
+    const byUid = store
+      .rosterForSession(id)
+      .find((s) => (s.rfidUid ?? "").trim().toUpperCase() === uid);
+    const bodyStudentId =
+      typeof body.studentId === "string" && body.studentId.trim()
+        ? body.studentId.trim()
+        : "";
+    const bodyName =
       typeof body.studentName === "string" && body.studentName.trim()
         ? body.studentName.trim()
         : undefined;
+    const studentId =
+      byUid?.studentId || bodyStudentId || `RFID-${uid}`;
+    const name = byUid?.name || bodyName;
     const at =
       typeof body.at === "number" && Number.isFinite(body.at)
         ? body.at
         : Date.now();
-    store.ensureStudent(id, { studentId, name });
-    store.markPresent(id, { studentId, at, uid: uid || undefined, name });
-    return c.json({ ok: true, studentId, at, source: "rfid" }, 201);
+    store.ensureStudent(id, { studentId, name, rfidUid: uid });
+    store.markPresent(id, { studentId, at, uid, name });
+    return c.json(
+      {
+        ok: true,
+        studentId,
+        name: name ?? studentId,
+        at,
+        source: byUid ? "roster" : bodyStudentId ? "body" : "rfid",
+      },
+      201,
+    );
   });
 
   // Clear the attendance register AND the roster (drops reports, timelines,
