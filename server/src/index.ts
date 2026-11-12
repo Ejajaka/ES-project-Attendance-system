@@ -609,10 +609,19 @@ export function createApp(store: Store, sessions: SessionRegistry): Hono {
     if (!uid) {
       return c.json({ error: "uid is required" }, 400);
     }
-    // The phone-entered UID mapping is authoritative: look it up first.
+    // The phone-entered UID mapping is authoritative: look it up first, but
+    // ignore auto-created placeholder rows (RFID-… / Card …) — a real binding
+    // must be able to replace them.
+    const isPlaceholder = (s: { studentId: string; name: string }) =>
+      s.studentId.toUpperCase().startsWith("RFID-") ||
+      s.name.toUpperCase().startsWith("CARD ");
     const byUid = store
       .rosterForSession(id)
-      .find((s) => (s.rfidUid ?? "").trim().toUpperCase() === uid);
+      .find(
+        (s) =>
+          (s.rfidUid ?? "").trim().toUpperCase() === uid &&
+          !isPlaceholder(s),
+      );
     const bodyStudentId =
       typeof body.studentId === "string" && body.studentId.trim()
         ? body.studentId.trim()
@@ -628,7 +637,14 @@ export function createApp(store: Store, sessions: SessionRegistry): Hono {
       typeof body.at === "number" && Number.isFinite(body.at)
         ? body.at
         : Date.now();
-    store.ensureStudent(id, { studentId, name, rfidUid: uid });
+    const bindUid =
+      !!byUid ||
+      (!!bodyStudentId && !bodyStudentId.toUpperCase().startsWith("RFID-"));
+    store.ensureStudent(id, {
+      studentId,
+      name,
+      rfidUid: bindUid ? uid : undefined,
+    });
     store.markPresent(id, { studentId, at, uid, name });
     return c.json(
       {

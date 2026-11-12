@@ -226,7 +226,24 @@ export class MemoryStore implements Store {
         deviceId: student.deviceId,
         rfidUid,
       });
-      this.rosters.set(sessionId, list);
+      if (rfidUid) {
+        const isPlaceholder = (s: Student) =>
+          s.studentId.toUpperCase().startsWith("RFID-") ||
+          s.name.toUpperCase().startsWith("CARD ");
+        this.rosters.set(
+          sessionId,
+          list.filter(
+            (s) =>
+              s.studentId === studentId ||
+              !(
+                isPlaceholder(s) &&
+                (s.rfidUid ?? "").trim().toUpperCase() === rfidUid
+              ),
+          ),
+        );
+      } else {
+        this.rosters.set(sessionId, list);
+      }
       return;
     }
     const cur = list[i]!;
@@ -260,17 +277,29 @@ export class MemoryStore implements Store {
       }
       this.rosters.set(sessionId, list);
     }
-    // One card = one student: a later binding wins over a stale one.
+    // One card = one student: a later binding wins over a stale one, and an
+    // auto-created placeholder row is replaced by the real student.
     if (rfidUid) {
-      for (let j = 0; j < list.length; j++) {
+      const isPlaceholder = (s: Student) =>
+        s.studentId.toUpperCase().startsWith("RFID-") ||
+        s.name.toUpperCase().startsWith("CARD ");
+      const cleaned = list.filter(
+        (s) =>
+          s.studentId === studentId ||
+          !(
+            isPlaceholder(s) &&
+            (s.rfidUid ?? "").trim().toUpperCase() === rfidUid
+          ),
+      );
+      for (const s of cleaned) {
         if (
-          j !== i &&
-          (list[j]?.rfidUid ?? "").trim().toUpperCase() === rfidUid
+          s.studentId !== studentId &&
+          (s.rfidUid ?? "").trim().toUpperCase() === rfidUid
         ) {
-          list[j] = { ...list[j]!, rfidUid: undefined };
+          s.rfidUid = undefined;
         }
       }
-      this.rosters.set(sessionId, list);
+      this.rosters.set(sessionId, cleaned);
     }
   }
 
