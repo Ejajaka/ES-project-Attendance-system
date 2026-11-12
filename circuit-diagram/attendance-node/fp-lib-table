@@ -1,0 +1,3 @@
+(fp_lib_table
+  (lib (name "attendance-node")(type "KiCad")(uri "${KIPRJMOD}/attendance-node.pretty")(options "")(descr "Project footprints"))
+)

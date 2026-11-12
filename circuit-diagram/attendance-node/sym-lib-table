@@ -1,0 +1,3 @@
+(sym_lib_table
+  (lib (name "attendance-node")(type "KiCad")(uri "${KIPRJMOD}/attendance-node.kicad_sym")(options "")(descr "Project symbols"))
+)
