@@ -113,6 +113,33 @@ export interface TelemetryPoint {
   wifi: number | null;
 }
 
+/**
+ * Remove placeholder rows for a UID (`RFID-<uid>` / `Card <uid>`) and clear
+ * the UID from any other student, keeping only the latest real binding.
+ */
+function removeUidDuplicates(
+  list: Student[],
+  studentId: string,
+  rfidUid: string,
+): Student[] {
+  const uid = rfidUid.trim().toUpperCase();
+  const isPlaceholder = (s: Student) =>
+    s.studentId.trim().toUpperCase() === `RFID-${uid}` ||
+    s.name.trim().toUpperCase() === `CARD ${uid}`;
+  const cleaned = list.filter(
+    (s) => s.studentId === studentId || !isPlaceholder(s),
+  );
+  for (const s of cleaned) {
+    if (
+      s.studentId !== studentId &&
+      (s.rfidUid ?? "").trim().toUpperCase() === uid
+    ) {
+      s.rfidUid = undefined;
+    }
+  }
+  return cleaned;
+}
+
 /** Whole-store serialization (for the JSON-file persistence in server.ts). */
 export interface StoreSnapshot {
   reports: DeviceReport[];
@@ -227,20 +254,8 @@ export class MemoryStore implements Store {
         rfidUid,
       });
       if (rfidUid) {
-        const isPlaceholder = (s: Student) =>
-          s.studentId.toUpperCase().startsWith("RFID-") ||
-          s.name.toUpperCase().startsWith("CARD ");
-        this.rosters.set(
-          sessionId,
-          list.filter(
-            (s) =>
-              s.studentId === studentId ||
-              !(
-                isPlaceholder(s) &&
-                (s.rfidUid ?? "").trim().toUpperCase() === rfidUid
-              ),
-          ),
-        );
+        const cleaned = removeUidDuplicates(list, studentId, rfidUid);
+        this.rosters.set(sessionId, cleaned);
       } else {
         this.rosters.set(sessionId, list);
       }
@@ -277,29 +292,13 @@ export class MemoryStore implements Store {
       }
       this.rosters.set(sessionId, list);
     }
-    // One card = one student: a later binding wins over a stale one, and an
-    // auto-created placeholder row is replaced by the real student.
+    // One card = one student: the latest binding wins, and any auto-created
+    // `RFID-<uid>` / `Card <uid>` placeholder is removed.
     if (rfidUid) {
-      const isPlaceholder = (s: Student) =>
-        s.studentId.toUpperCase().startsWith("RFID-") ||
-        s.name.toUpperCase().startsWith("CARD ");
-      const cleaned = list.filter(
-        (s) =>
-          s.studentId === studentId ||
-          !(
-            isPlaceholder(s) &&
-            (s.rfidUid ?? "").trim().toUpperCase() === rfidUid
-          ),
+      this.rosters.set(
+        sessionId,
+        removeUidDuplicates(list, studentId, rfidUid),
       );
-      for (const s of cleaned) {
-        if (
-          s.studentId !== studentId &&
-          (s.rfidUid ?? "").trim().toUpperCase() === rfidUid
-        ) {
-          s.rfidUid = undefined;
-        }
-      }
-      this.rosters.set(sessionId, cleaned);
     }
   }
 

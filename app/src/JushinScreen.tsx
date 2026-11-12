@@ -18,7 +18,13 @@ import { NativeSensors } from "./lib/nativeSensors";
 import { ATLAS_SSID, type Settings } from "./settings";
 import { JushinController, type JushinConfig } from "./lib/modes/jushin";
 import { HttpReporter, type ReportResult } from "./lib/reporter";
-import { ensureSession, postNodeConfig, postNodeTime, type ServerPresence } from "./lib/server";
+import {
+  bindRfid,
+  ensureSession,
+  postNodeConfig,
+  postNodeTime,
+  type ServerPresence,
+} from "./lib/server";
 import { useSessionPresence } from "./lib/useSessionPresence";
 import { modalityLabel } from "./lib/linkView";
 import { loadPersistentDeviceId } from "./lib/persistentDeviceId";
@@ -233,8 +239,31 @@ export default function JushinScreen({
     setIdentity(next);
     setBio(`${bio.kind} (ok)`);
     setBioOk(true);
-    setEnrollMsg(null);
-    setEditing(false);
+
+    // Send the UID binding now so the room reader works without Start.
+    let bound = true;
+    if (next.rfidUid) {
+      const sessionOk = await ensureSession(serverUrl, {
+        sessionId: settings.sessionId,
+        roomId: settings.roomId,
+        secret: settings.secret,
+      });
+      bound =
+        sessionOk &&
+        (await bindRfid(serverUrl, settings.sessionId, {
+          studentId: next.studentId,
+          studentName: next.studentName,
+          rfidUid: next.rfidUid,
+        }));
+      setEnrollMsg(
+        bound
+          ? "Card saved to the server."
+          : "Saved on phone; server unreachable — the card will sync when attendance starts.",
+      );
+    } else {
+      setEnrollMsg(null);
+    }
+    setEditing(!bound);
   };
 
   /**
@@ -520,7 +549,15 @@ export default function JushinScreen({
                   autoCorrect={false}
                 />
                 {enrollMsg ? (
-                  <Text className="text-sm text-destructive">{enrollMsg}</Text>
+                  <Text
+                    className={
+                      enrollMsg.startsWith("Card saved")
+                        ? "text-sm text-muted-foreground"
+                        : "text-sm text-destructive"
+                    }
+                  >
+                    {enrollMsg}
+                  </Text>
                 ) : null}
                 <Button onPress={() => void enroll()}>
                   <Text>Save &amp; verify fingerprint</Text>

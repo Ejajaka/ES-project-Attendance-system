@@ -500,6 +500,7 @@ static void handle_card(const char *uid_hex, const char *record)
     /* Online: the server's phone-entered UID mapping is authoritative and its
        response carries the final name/roll for the LCD. Offline: queue on SD
        (or keep the local mapping) and retry later. */
+    bool local_before = have_details;
     bool queued = false;
     bool server_matched = false;
     if (s_wifi_up) {
@@ -529,6 +530,11 @@ static void handle_card(const char *uid_hex, const char *record)
     } else {
         queued = s_sd_ok && storage_enqueue(json);
         s_sync_now = queued;
+    }
+    /* Persist a server-resolved binding in NVS/SD, so future taps (even with
+       the phone/server off) use the same name and roll. */
+    if (!local_before && server_matched) {
+        storage_add_mapping(uid_hex, roll, name);
     }
     if (s_sd_ok) {
         storage_log_scan(at, uid_hex, roll, name);

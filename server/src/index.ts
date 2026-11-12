@@ -658,6 +658,35 @@ export function createApp(store: Store, sessions: SessionRegistry): Hono {
     );
   });
 
+  // Enrollment-time UID binding: the phone sends roll/name/UID immediately, so
+  // RFID taps work even when the receiver is not running.
+  app.post("/api/sessions/:id/rfid/bind", async (c) => {
+    const id = c.req.param("id");
+    if (!sessions.get(id)) return c.json({ error: "unknown session" }, 404);
+    let body: { uid?: string; studentId?: string; studentName?: string };
+    try {
+      body = (await c.req.json()) as typeof body;
+    } catch {
+      return c.json({ error: "invalid JSON" }, 400);
+    }
+    const uid =
+      typeof body.uid === "string" ? body.uid.trim().toUpperCase() : "";
+    const studentId =
+      typeof body.studentId === "string" ? body.studentId.trim() : "";
+    if (!uid || !studentId) {
+      return c.json({ error: "uid and studentId are required" }, 400);
+    }
+    const name =
+      typeof body.studentName === "string" && body.studentName.trim()
+        ? body.studentName.trim()
+        : undefined;
+    store.ensureStudent(id, { studentId, name, rfidUid: uid });
+    return c.json(
+      { ok: true, uid, studentId, name: name ?? studentId },
+      201,
+    );
+  });
+
   // Clear the attendance register AND the roster (drops reports, timelines,
   // roster). The session is PAUSED so still-running phones cannot re-fill it;
   // RESUME lets phones auto-enroll again.

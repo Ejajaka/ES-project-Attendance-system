@@ -268,6 +268,39 @@ test("phone-entered RFID UID resolves the student name and roll", async () => {
   expect(row.name).toBe("Roshna George");
 });
 
+test("enrollment-time bind resolves UID without a running receiver", async () => {
+  const app = makeApp();
+  await app.request("/api/sessions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId: "s1", roomId: "r1", secret: SECRET_B64 }),
+  });
+  const bind = await app.request("/api/sessions/s1/rfid/bind", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      uid: "16fa551f",
+      studentId: "bl.1",
+      studentName: "Roshna George",
+    }),
+  });
+  expect(bind.status).toBe(201);
+
+  const tap = await app.request("/api/sessions/s1/rfid", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ uid: "16FA551F", at: ALIGNED }),
+  });
+  const resolved = await tap.json();
+  expect(resolved.studentId).toBe("bl.1");
+  expect(resolved.name).toBe("Roshna George");
+  expect(resolved.source).toBe("roster");
+
+  const sheet = await (await app.request("/api/sessions/s1/attendance")).json();
+  const row = sheet.rows.find((r: { studentId: string }) => r.studentId === "bl.1");
+  expect(row.present).toBe(true);
+});
+
 test("a phone report with rfidUid binds the card on the roster", async () => {
   const app = makeApp();
   await app.request("/api/sessions", {

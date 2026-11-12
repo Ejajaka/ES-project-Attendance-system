@@ -163,6 +163,35 @@ export async function postNodeConfig(
   }
 }
 
+/**
+ * Bind the phone-entered RFID UID to the student on the server at enrollment
+ * time. This makes room-reader taps work even when the receiver is not running.
+ * Best-effort: the offline path still has the ESP32 NVS mapping.
+ */
+export async function bindRfid(
+  serverUrl: string,
+  sessionId: string,
+  input: { studentId: string; studentName: string; rfidUid: string },
+): Promise<boolean> {
+  try {
+    const res = await fetch(
+      `${serverUrl}/api/sessions/${encodeURIComponent(sessionId)}/rfid/bind`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          uid: input.rfidUid,
+          studentId: input.studentId,
+          studentName: input.studentName,
+        }),
+      },
+    );
+    return res.ok || res.status === 201;
+  } catch {
+    return false;
+  }
+}
+
 /** `GET /api/node` — the node's self state (null when unreachable/malformed). */
 export async function getSelfNode(nodeUrl = ATLAS_NODE_URL): Promise<{
   nodeId?: string;
