@@ -22,6 +22,7 @@
  */
 
 #include <ctype.h>
+#include <strings.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -99,15 +100,6 @@ static esp_netif_t *s_ap_netif = NULL;
 
 #define TOTP_STEP_S 30
 
-/*
- * This UID-only token does not answer SELECT, so its written NDEF text cannot
- * be read by the RC522. Bind it here (NVS) until a readable NTAG is used; the
- * SoftAP card page can override this mapping at runtime.
- */
-#define DEFAULT_BIND_UID "16FA551F"
-#define DEFAULT_BIND_ROLL "BL.SC.U4CSE24043"
-#define DEFAULT_BIND_NAME "Roshna George"
-
 /** Green LED: on when the STA is connected to the classroom Wi-Fi. */
 #define LED_GPIO 25
 /** How often the LCD refreshes the live attendance count from the server. */
@@ -161,10 +153,15 @@ static volatile bool s_clear_now = false;
 /** microSD mounted successfully. */
 static bool s_sd_ok = false;
 /** Temporary LCD text requested by another task (printed by the sync task). */
-static char s_msg0[17];
+static char s_msg0[64];
 static char s_msg1[17];
 static volatile bool s_msg_pending = false;
 static uint32_t s_lcd_temp_until_ms = 0;
+/** Long name on LCD line 0: scroll it 16 chars at a time while the temp shows. */
+static char s_scroll0[64] = "";
+static bool s_scrolling = false;
+static int s_scroll_pos = 0;
+static uint32_t s_scroll_at = 0;
 
 #ifndef DEV_SEED_EPOCH
 #define DEV_SEED_EPOCH 0
@@ -200,6 +197,15 @@ static void lcd_show_temp(const char *line0, const char *line1, uint32_t ms)
     snprintf(s_msg1, sizeof(s_msg1), "%s", line1 ? line1 : "");
     s_lcd_temp_until_ms = now_ms() + ms;
     s_msg_pending = true;
+}
+
+/** Card removed: drop the tap message and immediately show attendance again. */
+static void lcd_clear_temp(void)
+{
+    s_msg_pending = false;
+    s_scrolling = false;
+    s_lcd_temp_until_ms = 0;
+    s_attendance_now = true;
 }
 
 /* --------------------------------------------------------------------- LED */
@@ -474,9 +480,17 @@ static void handle_card(const char *uid_hex, const char *record)
     }
 
     /* 2. UID → roll/name mapping on the microSD card. */
-    if (!have_details && s_sd_ok) {
-        have_details = storage_lookup_uid(uid_hex, roll, sizeof(roll), name,
-                                          sizeof(name));
+    char local_roll[64] = "";
+    char local_name[64] = "";
+    bool had_local = false;
+    if (!have_details) {
+        had_local = storage_lookup_uid(uid_hex, local_roll, sizeof(local_roll),
+                                       local_name, sizeof(local_name));
+        if (had_local) {
+            snprintf(roll, sizeof(roll), "%s", local_roll);
+            snprintf(name, sizeof(name), "%s", local_name);
+            have_details = true;
+        }
     }
 
     /* 3. Unknown card: still record it (never lose a tap). */
@@ -500,7 +514,6 @@ static void handle_card(const char *uid_hex, const char *record)
     /* Online: the server's phone-entered UID mapping is authoritative and its
        response carries the final name/roll for the LCD. Offline: queue on SD
        (or keep the local mapping) and retry later. */
-    bool local_before = have_details;
     bool queued = false;
     bool server_matched = false;
     if (s_wifi_up) {
@@ -531,9 +544,13 @@ static void handle_card(const char *uid_hex, const char *record)
         queued = s_sd_ok && storage_enqueue(json);
         s_sync_now = queued;
     }
-    /* Persist a server-resolved binding in NVS/SD, so future taps (even with
-       the phone/server off) use the same name and roll. */
-    if (!local_before && server_matched) {
+    /* Persist a real server-resolved binding (never a placeholder), so future
+       taps use the same name and roll even with the phone/server off. */
+    bool real_mapping =
+        strncmp(roll, "RFID-", 5) != 0 && strncasecmp(name, "Card ", 5) != 0;
+    if (server_matched && real_mapping &&
+        (!had_local || strcmp(local_roll, roll) != 0 ||
+         strcmp(local_name, name) != 0)) {
         storage_add_mapping(uid_hex, roll, name);
     }
     if (s_sd_ok) {
@@ -547,12 +564,8 @@ static void handle_card(const char *uid_hex, const char *record)
         vTaskDelay(pdMS_TO_TICKS(80));
         buzzer_beep(60);
     }
-    /* LCD: the student's name on line 0 and roll number on line 1. */
-    char line0[17];
-    char line1[17];
-    snprintf(line0, sizeof(line0), "%.16s", name);
-    snprintf(line1, sizeof(line1), "%.16s", roll);
-    lcd_show_temp(line0, line1, 4000);
+    /* LCD: full name (scrolls if >16 chars) on line 0, roll on line 1. */
+    lcd_show_temp(name, roll, 6000);
     const char *source = (record && strpbrk(record, "|,"))
                              ? "card"
                              : server_matched ? "server"
@@ -571,8 +584,19 @@ static void rfid_task(void *arg)
     char last_uid[16] = "";
     TickType_t last_at = 0;
 
+    bool card_present = false;
     for (;;) {
-        if (rfid_read_uid(uid, &uid_len, &sak) && uid_len > 0) {
+        bool seen = rfid_read_uid(uid, &uid_len, &sak);
+        if (!seen) {
+            if (card_present) {
+                card_present = false;
+                lcd_clear_temp();
+            }
+            vTaskDelay(pdMS_TO_TICKS(250));
+            continue;
+        }
+        card_present = true;
+        if (uid_len > 0) {
             char hex[16];
             size_t o = 0;
             for (uint8_t i = 0; i < uid_len && o + 2 < sizeof(hex); i++) {
@@ -1608,6 +1632,33 @@ static void sync_task(void *arg)
             s_msg_pending = false;
             lcd_print(0, s_msg0);
             lcd_print(1, s_msg1);
+            if (strlen(s_msg0) > 16) {
+                snprintf(s_scroll0, sizeof(s_scroll0), "%s", s_msg0);
+                s_scrolling = true;
+                s_scroll_pos = 0;
+                s_scroll_at = now_ms();
+            } else {
+                s_scrolling = false;
+            }
+        }
+        /* Scroll a long student name on line 0 while the tap message is up. */
+        if (s_scrolling) {
+            if (now_ms() >= s_lcd_temp_until_ms) {
+                s_scrolling = false;
+            } else if (now_ms() - s_scroll_at >= 350) {
+                s_scroll_at = now_ms();
+                size_t len = strlen(s_scroll0);
+                if (len > 0) {
+                    s_scroll_pos = (s_scroll_pos + 1) % (int)(len + 1);
+                    char win[17];
+                    for (int i = 0; i < 16; i++) {
+                        size_t idx = (size_t)((s_scroll_pos + i) % (int)(len + 1));
+                        win[i] = idx < len ? s_scroll0[idx] : ' ';
+                    }
+                    win[16] = '\0';
+                    lcd_print(0, win);
+                }
+            }
         }
 
         /* Button 2: drop the local upload queue (server rows are untouched). */
@@ -1751,18 +1802,6 @@ void app_main(void)
 
     config_load_from_nvs();
 
-    /* Bind the demo UID once (NVS). The SoftAP page can overwrite it later. */
-    char bind_roll[64];
-    char bind_name[64];
-    if (!storage_lookup_uid(DEFAULT_BIND_UID, bind_roll, sizeof(bind_roll),
-                            bind_name, sizeof(bind_name))) {
-        if (storage_add_mapping(DEFAULT_BIND_UID, DEFAULT_BIND_ROLL,
-                                DEFAULT_BIND_NAME)) {
-            ESP_LOGI(TAG, "[rfid] bound %s -> %s, %s", DEFAULT_BIND_UID,
-                     DEFAULT_BIND_ROLL, DEFAULT_BIND_NAME);
-        }
-    }
-
     led_init();
 
     // Show the LCD immediately at boot — it must not wait for WiFi/SNTP.
@@ -1814,5 +1853,6 @@ void app_main(void)
     xTaskCreate(button_task, "btn", 2048, NULL, 3, NULL);
     xTaskCreate(ultrasonic_task, "ultra", 2048, NULL, 3, NULL);
 }
+
 
 

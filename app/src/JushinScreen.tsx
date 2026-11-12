@@ -147,8 +147,34 @@ export default function JushinScreen({
       setEnrollId(id.studentId);
       setEnrollName(id.studentName);
       setEnrollRfid(id.rfidUid ?? "");
+      console.log(
+        `[identity] stored on phone: ${id.studentName} · ${id.studentId} · RFID ${id.rfidUid ?? "none"}`,
+      );
     });
   }, []);
+
+  // The phone's stored identity is the source of truth: bind its UID to the
+  // server as soon as the app opens, without requiring Start attendance.
+  useEffect(() => {
+    if (!identity?.rfidUid) return;
+    void (async () => {
+      const sessionOk = await ensureSession(serverUrl, {
+        sessionId: settings.sessionId,
+        roomId: settings.roomId,
+        secret: settings.secret,
+      });
+      if (!sessionOk) return;
+      await bindRfid(serverUrl, settings.sessionId, {
+        studentId: identity.studentId,
+        studentName: identity.studentName,
+        rfidUid: identity.rfidUid,
+      });
+      console.log(
+        `[identity] bound ${identity.rfidUid} -> ${identity.studentName} · ${identity.studentId}`,
+      );
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [identity?.rfidUid]);
 
   // Live signal preview: keep the BLE/WiFi trace running even before ENGAGE.
   // WiFi is sampled by LiveSignalGraph (0.5 s); BLE is scanned here while idle.
