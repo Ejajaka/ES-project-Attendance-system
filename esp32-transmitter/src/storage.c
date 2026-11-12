@@ -126,7 +126,7 @@ bool storage_lookup_uid(const char *uid, char *roll, size_t roll_sz,
     nvs_handle_t h;
     if (nvs_open(NVS_RFID_NS, NVS_READONLY, &h) == ESP_OK) {
         char key[16];
-        snprintf(key, sizeof(key), "u_%s", uid);
+        snprintf(key, sizeof(key), "u%s", uid);
         char val[160];
         size_t len = sizeof(val);
         if (nvs_get_str(h, key, val, &len) == ESP_OK) {
@@ -164,7 +164,7 @@ bool storage_add_mapping(const char *uid, const char *roll, const char *name)
     nvs_handle_t h;
     if (nvs_open(NVS_RFID_NS, NVS_READWRITE, &h) == ESP_OK) {
         char key[16];
-        snprintf(key, sizeof(key), "u_%s", uid);
+        snprintf(key, sizeof(key), "u%s", uid);
         char val[160];
         snprintf(val, sizeof(val), "%s|%s", roll, name);
         if (nvs_set_str(h, key, val) == ESP_OK && nvs_commit(h) == ESP_OK) {

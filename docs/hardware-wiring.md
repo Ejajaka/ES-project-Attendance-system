@@ -145,6 +145,16 @@ still works if the microSD is missing. Unknown cards are never lost: they are
 recorded as `RFID-<UID>` / `Card <UID>` with a double beep, and can be named
 later.
 
+Some tags (including UID-only tokens) do not answer the ISO14443A **SELECT**
+step. The reader then uses the anticoll UID and skips card-resident data; bind
+that UID once via the registration page — after that, the LCD shows the
+student's **name (line 1)** and **roll number (line 2)** for 4 s on every tap,
+and the register shows **Name | Roll no | Present**.
+
+For the current test build the microSD is disabled (`SD_ENABLED=0`) because an
+unpowered SD adapter was loading the shared MISO line; keep it off the SPI bus
+until it is powered/CS-clean, then set `SD_ENABLED=1`.
+
 Attendance rows are non-expiring (only **CLEAR ATTENDANCE** resets them). The
 server auto-enrolls the name/roll into the roster on the first tap and the
 register/CSV show them.

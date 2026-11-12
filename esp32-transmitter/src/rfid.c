@@ -1,5 +1,6 @@
 #include "rfid.h"
 
+#include <ctype.h>
 #include <string.h>
 
 #include "driver/gpio.h"
@@ -12,6 +13,8 @@ static const char *TAG = "rfid";
 
 #define RFID_CS_GPIO 5
 #define RFID_RST_GPIO 17
+/* Older wiring used GPIO16 for RST; drive both so either works. */
+#define RFID_RST_GPIO_ALT 16
 
 /* MFRC522 registers (datasheet §9). */
 #define REG_COMMAND 0x01
@@ -24,6 +27,7 @@ static const char *TAG = "rfid";
 #define REG_BIT_FRAMING 0x0D
 #define REG_COLL 0x0E
 #define REG_MODE 0x11
+#define REG_RX_GAIN 0x26
 #define REG_STATUS2 0x08
 #define REG_CRC_RESULT_H 0x21
 #define REG_CRC_RESULT_L 0x22
@@ -42,11 +46,16 @@ static const char *TAG = "rfid";
 
 #define PICC_REQA 0x26
 #define PICC_SEL_CL1 0x93
+#define PICC_SEL_CL2 0x95
 #define PICC_ANTICOLL 0x20
 #define PICC_SELECT 0x70
 
 static spi_device_handle_t s_spi = NULL;
 static bool s_ready = false;
+static bool s_selected = false;
+static uint8_t s_version = 0;
+
+static bool picc_request(void);
 
 static void rfid_write(uint8_t reg, uint8_t value)
 {
@@ -102,8 +111,10 @@ void rfid_cycle_field(void)
 static void rfid_reset_chip(void)
 {
     gpio_set_level(RFID_RST_GPIO, 0);
+    gpio_set_level(RFID_RST_GPIO_ALT, 0);
     vTaskDelay(pdMS_TO_TICKS(10));
     gpio_set_level(RFID_RST_GPIO, 1);
+    gpio_set_level(RFID_RST_GPIO_ALT, 1);
     vTaskDelay(pdMS_TO_TICKS(50));
 
     rfid_write(REG_COMMAND, CMD_SOFT_RESET);
@@ -116,13 +127,15 @@ static void rfid_reset_chip(void)
     rfid_write(REG_T_RELOAD_L, 0x00);
     rfid_write(REG_TX_ASK, 0x40);
     rfid_write(REG_MODE, 0x3D);
+    /* Maximum receiver gain (48 dB) for small NTAG stickers / weak coupling. */
+    rfid_write(REG_RX_GAIN, 0x70);
     rfid_antenna(true);
 }
 
 bool rfid_init(void)
 {
     gpio_config_t rst = {
-        .pin_bit_mask = 1ULL << RFID_RST_GPIO,
+        .pin_bit_mask = (1ULL << RFID_RST_GPIO) | (1ULL << RFID_RST_GPIO_ALT),
         .mode = GPIO_MODE_OUTPUT,
         .pull_up_en = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
@@ -130,9 +143,11 @@ bool rfid_init(void)
     };
     gpio_config(&rst);
     gpio_set_level(RFID_RST_GPIO, 1);
+    gpio_set_level(RFID_RST_GPIO_ALT, 1);
 
     spi_device_interface_config_t dev = {
-        .clock_speed_hz = 4 * 1000 * 1000,
+        /* 1 MHz is deliberately conservative for breadboard wiring. */
+        .clock_speed_hz = 1 * 1000 * 1000,
         .mode = 0,
         .spics_io_num = RFID_CS_GPIO,
         .queue_size = 1,
@@ -144,6 +159,12 @@ bool rfid_init(void)
 
     rfid_reset_chip();
     uint8_t version = rfid_read(REG_VERSION);
+    if (version == 0x00 || version == 0xFF) {
+        /* Some clones need longer after reset before the version is readable. */
+        vTaskDelay(pdMS_TO_TICKS(150));
+        version = rfid_read(REG_VERSION);
+    }
+    s_version = version;
     ESP_LOGI(TAG, "MFRC522 version=0x%02x (CS=%d RST=%d)", version,
              RFID_CS_GPIO, RFID_RST_GPIO);
     if (version == 0x00 || version == 0xFF) {
@@ -158,6 +179,23 @@ bool rfid_init(void)
 bool rfid_ready(void)
 {
     return s_ready;
+}
+
+/** Diagnostic: antenna/Tx/Rx registers + a raw REQA attempt. */
+bool rfid_probe(void)
+{
+    if (!s_ready) return false;
+    uint8_t tx = rfid_read(REG_TX_CONTROL);
+    uint8_t rx = rfid_read(REG_RX_GAIN);
+    bool atqa = picc_request();
+    ESP_LOGI(TAG, "[probe] ver=0x%02x tx=0x%02x rx=0x%02x atqa=%d",
+             s_version, tx, rx, atqa);
+    return atqa;
+}
+
+uint8_t rfid_version(void)
+{
+    return s_version;
 }
 
 /** Send a frame; returns false on error/timeout. `tx_last_bits` 0 = whole bytes. */
@@ -226,40 +264,65 @@ static bool picc_request(void)
     return bits == 16;
 }
 
-static bool picc_anticoll(uint8_t uid[4])
+/**
+ * Anticollision for one cascade level (0x93 CL1, 0x95 CL2).
+ * Returns the UID bytes for that level (3 when a 0x88 cascade tag is present,
+ * else 4) and whether a cascade tag was seen via `part_len`.
+ */
+static bool picc_anticoll(uint8_t sel, uint8_t part[4], uint8_t *part_len)
 {
-    uint8_t cmd[2] = {PICC_SEL_CL1, PICC_ANTICOLL};
+    uint8_t cmd[2] = {sel, PICC_ANTICOLL};
     uint8_t back[64] = {0};
     uint16_t bits = 0;
     rfid_write(REG_BIT_FRAMING, 0x00);
     if (!pcd_transceive(cmd, sizeof(cmd), back, &bits, 0)) {
         return false;
     }
-    if (bits != 40) {
-        return false;
-    }
+    if (bits != 40) return false;
     uint8_t bcc = (uint8_t)(back[0] ^ back[1] ^ back[2] ^ back[3]);
     if (bcc != back[4]) {
         ESP_LOGW(TAG, "UID BCC mismatch");
         return false;
     }
-    memcpy(uid, back, 4);
+    if (back[0] == 0x88) {
+        memcpy(part, back + 1, 3);
+        *part_len = 3; /* cascade tag: more UID bytes follow */
+    } else {
+        memcpy(part, back, 4);
+        *part_len = 4;
+    }
     return true;
 }
 
-static bool picc_select(const uint8_t uid[4], uint8_t *sak)
+/** Select one cascade level; returns the SAK (0x04 means "cascade follows"). */
+static bool picc_select(uint8_t sel, const uint8_t part[4], uint8_t part_len,
+                        uint8_t *sak)
 {
-    uint8_t cmd[7] = {
-        PICC_SEL_CL1, PICC_SELECT, uid[0], uid[1], uid[2], uid[3],
-        (uint8_t)(uid[0] ^ uid[1] ^ uid[2] ^ uid[3]),
-    };
+    uint8_t cmd[9];
+    size_t n = 0;
+    uint8_t bcc = 0;
+    cmd[n++] = sel;
+    cmd[n++] = PICC_SELECT;
+    if (part_len == 3) {
+        cmd[n++] = 0x88; /* cascade tag is part of the CL1 BCC */
+        bcc = 0x88;
+    }
+    for (uint8_t i = 0; i < part_len; i++) {
+        cmd[n++] = part[i];
+        bcc ^= part[i];
+    }
+    cmd[n++] = bcc;
+
     uint8_t back[64] = {0};
     uint16_t bits = 0;
     rfid_write(REG_BIT_FRAMING, 0x00);
-    if (!pcd_transceive(cmd, sizeof(cmd), back, &bits, 0)) {
+    if (!pcd_transceive(cmd, (uint8_t)n, back, &bits, 0)) {
         return false;
     }
-    if (bits != 24) return false; /* SAK */
+    ESP_LOGI(TAG, "[select] bits=%u sak=0x%02x", bits, back[0]);
+    /* Some clones/tags append extra bytes; anything >= the 3-byte SAK+CRC is
+       enough to know the tag accepted the select. */
+    if (bits < 24) return false;
     if (sak) *sak = back[0];
     return true;
 }
@@ -332,7 +395,7 @@ static bool extract_record(const uint8_t *data, int n, char *out,
         int start = i;
         bool has_bar = false;
         while (i < n && data[i] >= 0x20 && data[i] <= 0x7E) {
-            if (data[i] == '|') has_bar = true;
+            if (data[i] == '|' || data[i] == ',') has_bar = true;
             i++;
         }
         if (!has_bar || i - start < 3) continue;
@@ -363,7 +426,7 @@ static bool extract_record(const uint8_t *data, int n, char *out,
 bool rfid_read_record(const uint8_t uid[4], uint8_t sak, char *out,
                       size_t out_sz)
 {
-    if (!s_ready || !uid || !out || out_sz < 4) return false;
+    if (!s_ready || !s_selected || !uid || !out || out_sz < 4) return false;
     uint8_t data[64];
     size_t got = 0;
     bool any = false;
@@ -422,7 +485,17 @@ bool rfid_read_record(const uint8_t uid[4], uint8_t sak, char *out,
         }
     }
 
-    if (!any) return false;
+    if (!any) {
+        ESP_LOGW(TAG, "[card] no data blocks/pages readable");
+        return false;
+    }
+    char ascii[65];
+    size_t a = got < sizeof(ascii) - 1 ? got : sizeof(ascii) - 1;
+    for (size_t i = 0; i < a; i++) {
+        ascii[i] = isprint(data[i]) ? (char)data[i] : '.';
+    }
+    ascii[a] = '\0';
+    ESP_LOGI(TAG, "[card] raw: %s", ascii);
     return extract_record(data, (int)got, out, out_sz);
 }
 
@@ -430,19 +503,57 @@ bool rfid_read_uid(uint8_t uid[10], uint8_t *uid_len, uint8_t *sak)
 {
     if (!s_ready) return false;
 
-    /* A card left in the field stays ACTIVE; cycling the field lets it answer
-       REQA again on the next poll. */
-    rfid_cycle_field();
-
+    /* The field stays on while polling: a card needs continuous power to
+       answer REQA. The caller cycles the field once after a successful read. */
+    s_selected = false;
     if (!picc_request()) return false;
 
-    uint8_t candidate[4];
+    uint8_t part[4];
+    uint8_t part_len = 0;
     uint8_t candidate_sak = 0;
-    if (!picc_anticoll(candidate)) return false;
-    if (!picc_select(candidate, &candidate_sak)) return false;
+    if (!picc_anticoll(PICC_SEL_CL1, part, &part_len)) {
+        ESP_LOGW(TAG, "[uid] anticoll CL1 failed");
+        return false;
+    }
+    ESP_LOGI(TAG, "[uid] anticoll ok len=%u", part_len);
 
-    memcpy(uid, candidate, 4);
-    if (uid_len) *uid_len = 4;
+    if (part_len == 3) {
+        /* 7-byte UID: CL1 reports a cascade tag, then CL2 carries UID[3..6]. */
+        if (!picc_select(PICC_SEL_CL1, part, 3, &candidate_sak)) {
+            ESP_LOGW(TAG, "[uid] select CL1 failed");
+            return false;
+        }
+        ESP_LOGI(TAG, "[uid] select CL1 sak=0x%02x", candidate_sak);
+        if (!(candidate_sak & 0x04)) return false;
+        uint8_t part2[4];
+        uint8_t part2_len = 0;
+        if (!picc_anticoll(PICC_SEL_CL2, part2, &part2_len)) {
+            ESP_LOGW(TAG, "[uid] anticoll CL2 failed");
+            return false;
+        }
+        if (part2_len != 4) return false;
+        if (!picc_select(PICC_SEL_CL2, part2, 4, &candidate_sak)) {
+            ESP_LOGW(TAG, "[uid] select CL2 failed");
+            return false;
+        }
+        memcpy(uid, part, 3);
+        memcpy(uid + 3, part2, 4);
+        if (uid_len) *uid_len = 7;
+    } else {
+        if (picc_select(PICC_SEL_CL1, part, 4, &candidate_sak)) {
+            ESP_LOGI(TAG, "[uid] select 4-byte sak=0x%02x", candidate_sak);
+            s_selected = true;
+        } else {
+            /* The UID from anticoll is still valid for attendance. SELECT is
+               only needed for card data blocks / authentication. */
+            ESP_LOGW(TAG, "[uid] select failed — using anticoll UID");
+            candidate_sak = 0;
+        }
+        memcpy(uid, part, 4);
+        if (uid_len) *uid_len = 4;
+    }
+
     if (sak) *sak = candidate_sak;
     return true;
 }
+

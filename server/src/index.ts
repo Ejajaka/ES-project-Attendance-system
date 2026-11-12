@@ -44,14 +44,12 @@ function esc(s: string): string {
  */
 function attendanceHtml(sheet: AttendanceSheet, paused = false): string {
   const rows = sheet.rows
-    .map((r) => {
-      const dur = r.presentMs >= 1000 ? `${Math.round(r.presentMs / 1000)}s` : "—";
-      return `<tr class="${r.present ? "p" : "a"}"><td>${esc(r.studentId)}</td><td>${esc(
-        r.name,
-      )}</td><td>${r.present ? "PRESENT" : "absent"}</td><td>${
-        r.deviceId ? esc(r.deviceId) : "—"
-      }</td><td>${dur}</td><td>${Math.round(r.coverage * 100)}%</td></tr>`;
-    })
+    .map(
+      (r) =>
+        `<tr class="${r.present ? "p" : "a"}"><td>${esc(r.name)}</td><td>${esc(
+          r.studentId,
+        )}</td><td>${r.present ? "PRESENT" : "absent"}</td></tr>`,
+    )
     .join("");
   const unrostered = sheet.unrostered
     .map(
@@ -115,8 +113,8 @@ ${
     : ""
 }
 <table>
-<thead><tr><th>Roll</th><th>Name</th><th>Status</th><th>Device</th><th>Duration</th><th>Coverage</th></tr></thead>
-<tbody>${rows || '<tr><td colspan="6">No roster yet — add students below.</td></tr>'}</tbody>
+<thead><tr><th>Name</th><th>Roll no</th><th>Present</th></tr></thead>
+<tbody>${rows || '<tr><td colspan="3">No roster yet — add students below.</td></tr>'}</tbody>
 </table>
 ${unrostered ? `<h3>Unrostered devices seen</h3><ul>${unrostered}</ul>` : ""}
 <form onsubmit="return saveRoster(event)">

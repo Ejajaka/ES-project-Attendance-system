@@ -124,6 +124,18 @@ static esp_netif_t *s_ap_netif = NULL;
 #define ULTRASONIC_GPIO 27
 /** How often queued RFID taps are retried while the STA is up. */
 #define SYNC_PERIOD_MS 15000
+/**
+ * microSD is optional. While the SD adapter is not physically mounted, leave
+ * this at 0: a failed FAT mount on the shared SPI bus can disturb the RFID
+ * reader. Set to 1 once the card adapter is wired.
+ */
+#ifndef SD_ENABLED
+#define SD_ENABLED 0
+#endif
+/** Minimal hardware smoke test: LCD + RC522 only (no WiFi/BLE/server/SD). */
+#ifndef RFID_TEST_MODE
+#define RFID_TEST_MODE 0
+#endif
 
 /** Set when the STA gets an IP so the LCD refreshes immediately. */
 static volatile bool s_attendance_now = false;
@@ -401,12 +413,14 @@ static void handle_card(const char *uid_hex, const char *record)
     char name[64];
     bool have_details = false;
 
-    /* 1. Details written on the card itself: "ROLL|NAME". */
-    if (record && strchr(record, '|')) {
+    /* 1. Details written on the card itself.
+       `ROLL|NAME` (project format) or `NAME,ROLL` (the register's order). */
+    if (record && strpbrk(record, "|,")) {
         char rec[96];
         snprintf(rec, sizeof(rec), "%s", record);
-        char *bar = strchr(rec, '|');
+        char *bar = strpbrk(rec, "|,");
         if (bar) {
+            bool pipe = *bar == '|';
             *bar = '\0';
             char *r = rec;
             char *n = bar + 1;
@@ -417,8 +431,14 @@ static void handle_card(const char *uid_hex, const char *record)
             char *ne = n + strlen(n);
             while (ne > n && ne[-1] == ' ') *--ne = '\0';
             if (*r && *n) {
-                snprintf(roll, sizeof(roll), "%.63s", r);
-                snprintf(name, sizeof(name), "%.63s", n);
+                if (pipe) {
+                    snprintf(roll, sizeof(roll), "%.63s", r);
+                    snprintf(name, sizeof(name), "%.63s", n);
+                } else {
+                    /* "name,roll" per the requested register format. */
+                    snprintf(name, sizeof(name), "%.63s", r);
+                    snprintf(roll, sizeof(roll), "%.63s", n);
+                }
                 have_details = true;
             }
         }
@@ -466,9 +486,12 @@ static void handle_card(const char *uid_hex, const char *record)
         vTaskDelay(pdMS_TO_TICKS(80));
         buzzer_beep(60);
     }
+    /* LCD: the student's name on line 0 and roll number on line 1. */
+    char line0[17];
     char line1[17];
+    snprintf(line0, sizeof(line0), "%.16s", name);
     snprintf(line1, sizeof(line1), "%.16s", roll);
-    lcd_show_temp("RFID", line1, 2500);
+    lcd_show_temp(line0, line1, 4000);
     ESP_LOGI(TAG, "[rfid] uid=%s roll=%s name=%s source=%s queued=%d",
              uid_hex, roll, name,
              record && strchr(record, '|') ? "card"
@@ -509,6 +532,9 @@ static void rfid_task(void *arg)
                 snprintf(last_uid, sizeof(last_uid), "%s", hex);
                 last_at = now;
             }
+            /* Power-cycle the field once so a card left on the reader can
+               answer REQA again on the next poll. */
+            rfid_cycle_field();
         }
         vTaskDelay(pdMS_TO_TICKS(250));
     }
@@ -1419,16 +1445,9 @@ static void sync_task(void *arg)
                      gpio_get_level(BTN_CLEAR_GPIO), storage_pending_count());
         }
 
-        /* A card can be inserted after boot — keep trying to mount the SD. */
-        if (!s_sd_ok &&
-            now_ticks - last_sd_retry >= pdMS_TO_TICKS(20000)) {
-            last_sd_retry = now_ticks;
-            s_sd_ok = storage_init();
-            if (s_sd_ok) {
-                lcd_show_temp("SD", "ready", 2000);
-                buzzer_beep(100);
-            }
-        }
+        /* SD retry is intentionally off while testing without a card: each
+           mount attempt stalls the SPI bus shared with the RFID reader. */
+        (void)last_sd_retry;
 
         /* Re-pick the runtime server URL so a fresh /api/node/config is honoured. */
         bool configured = strlen(s_server_url) > 0;
@@ -1558,6 +1577,70 @@ void app_main(void)
     ESP_LOGI(TAG, "Shusseki ESP32 transmitter starting (node=%s, room=%s)",
              NODE_ID, PRESET_ROOM_ID);
 
+#if RFID_TEST_MODE
+    /*
+     * Standalone reader smoke test: no NVS, WiFi, BLE, server or SD. The LCD
+     * shows the reader state and the hex UID of every card placed on the coil.
+     */
+    bool t_lcd_ok = lcd_init();
+    spi_init();
+    /* Park only the (unused) SD CS high; the SPI driver owns the RFID CS. */
+    gpio_config_t t_sd_cs = {
+        .pin_bit_mask = 1ULL << SD_CS_GPIO,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&t_sd_cs);
+    gpio_set_level(SD_CS_GPIO, 1);
+    bool reader_ok = rfid_init();
+    buzzer_init();
+    if (t_lcd_ok) {
+        lcd_print(0, reader_ok ? "RFID test" : "Reader FAIL");
+        if (reader_ok) {
+            lcd_print(1, "Tap card...");
+        } else {
+            char ver[24];
+            snprintf(ver, sizeof(ver), "ver 0x%02X cs5 rst17", rfid_version());
+            lcd_print(1, ver);
+        }
+    }
+    ESP_LOGI(TAG, "RFID TEST MODE: reader=%s", reader_ok ? "ok" : "FAIL");
+    for (;;) {
+        uint8_t uid[10];
+        uint8_t uid_len = 0;
+        uint8_t sak = 0;
+        static TickType_t last_probe = 0;
+        if (reader_ok &&
+            xTaskGetTickCount() - last_probe > pdMS_TO_TICKS(2000)) {
+            last_probe = xTaskGetTickCount();
+            /* Fresh field every 2 s: a card left ACTIVE after a failed select
+               otherwise stops answering REQA forever. */
+            rfid_cycle_field();
+            rfid_probe();
+        }
+        if (reader_ok && rfid_read_uid(uid, &uid_len, &sak) && uid_len > 0) {
+            char hex[24];
+            size_t o = 0;
+            for (uint8_t i = 0; i < uid_len && o + 2 < sizeof(hex); i++) {
+                o += (size_t)snprintf(hex + o, sizeof(hex) - o, "%02X", uid[i]);
+            }
+            hex[o] = '\0';
+            ESP_LOGI(TAG, "[test] UID=%s len=%u sak=0x%02x", hex, uid_len, sak);
+            if (t_lcd_ok) {
+                lcd_print(0, "UID:");
+                lcd_print(1, hex);
+            }
+            buzzer_beep(120);
+            rfid_cycle_field();
+            vTaskDelay(pdMS_TO_TICKS(1500));
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(200));
+        }
+    }
+#endif
+
     esp_err_t nvs = nvs_flash_init();
     if (nvs == ESP_ERR_NVS_NO_FREE_PAGES ||
         nvs == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -1592,7 +1675,13 @@ void app_main(void)
     if (!rfid_init()) {
         ESP_LOGW(TAG, "RFID reader unavailable (check 3.3V/SPI wiring)");
     }
+#if SD_ENABLED
     s_sd_ok = storage_init();
+#else
+    s_sd_ok = false;
+    ESP_LOGW(TAG, "microSD disabled (SD_ENABLED=0) — RFID uploads directly, "
+                  "UID mappings use NVS");
+#endif
     buzzer_init();
     ultrasonic_init();
     buttons_init();
@@ -1612,3 +1701,5 @@ void app_main(void)
     xTaskCreate(button_task, "btn", 2048, NULL, 3, NULL);
     xTaskCreate(ultrasonic_task, "ultra", 2048, NULL, 3, NULL);
 }
+
+

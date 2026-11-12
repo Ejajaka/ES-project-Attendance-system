@@ -18,6 +18,12 @@ bool rfid_init(void);
 /** True once the reader answered with a plausible version register. */
 bool rfid_ready(void);
 
+/** Raw MFRC522 VersionReg value (0x91/0x92 = genuine/clone, 0x00/0xFF = fail). */
+uint8_t rfid_version(void);
+
+/** Diagnostic: log antenna/gain registers and whether any card answers REQA. */
+bool rfid_probe(void);
+
 /**
  * Poll for a card. On success fills `uid` (up to 4 bytes), `uid_len` and the
  * SAK (card type). Returns false when no card is present (the normal case).
