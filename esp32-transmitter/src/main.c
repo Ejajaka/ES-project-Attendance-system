@@ -157,6 +157,8 @@ static char s_msg0[64];
 static char s_msg1[17];
 static volatile bool s_msg_pending = false;
 static uint32_t s_lcd_temp_until_ms = 0;
+/** Fingerprint of the server's RFID bindings; changes trigger the 2-beep alert. */
+static uint32_t s_bind_hash = 0;
 /** Long name on LCD line 0: scroll it 16 chars at a time while the temp shows. */
 static char s_scroll0[64] = "";
 static bool s_scrolling = false;
@@ -339,7 +341,7 @@ static void ultrasonic_init(void)
         .speed_mode = LEDC_LOW_SPEED_MODE,
         .duty_resolution = LEDC_TIMER_10_BIT,
         .timer_num = LEDC_TIMER_0,
-        .freq_hz = 4500,
+        .freq_hz = 20000,
         .clk_cfg = LEDC_AUTO_CLK,
     };
     if (ledc_timer_config(&timer) != ESP_OK) {
@@ -359,13 +361,13 @@ static void ultrasonic_init(void)
         ESP_LOGW(TAG, "ultrasonic LEDC channel init failed");
         return;
     }
-    ESP_LOGI(TAG, "ultrasonic stamp on GPIO%d (4.5 kHz)", ULTRASONIC_GPIO);
+    ESP_LOGI(TAG, "ultrasonic stamp on GPIO%d (20 kHz)", ULTRASONIC_GPIO);
 }
 
 static void ultrasonic_task(void *arg)
 {
     (void)arg;
-    static const uint32_t freqs[4] = {4500, 4450, 4500, 4450};
+    static const uint32_t freqs[4] = {20000, 19600, 20000, 19600};
     for (;;) {
         for (int i = 0; i < 4; i++) {
             ledc_set_freq(LEDC_LOW_SPEED_MODE, LEDC_TIMER_0, freqs[i]);
@@ -949,6 +951,32 @@ static void refresh_attendance_lcd(void)
     lcd_print(0, line0);
     lcd_print(1, s_wifi_up ? STA_SSID : "No WiFi");
     ESP_LOGI(TAG, "[lcd] attendance %d/%d", present, roster);
+
+    /* A phone binding changes the server roster's rfidUid set. Poll it and
+       beep the active buzzer twice when a new/changed binding arrives. */
+    char rbody[2048];
+    int rstatus = http_get_text("/api/sessions/" PRESET_SESSION_ID "/roster",
+                                rbody, sizeof(rbody));
+    if (rstatus == 200) {
+        uint32_t h = 2166136261u;
+        const char *rp = rbody;
+        while ((rp = strstr(rp, "\"rfidUid\":\"")) != NULL) {
+            rp += strlen("\"rfidUid\":\"");
+            while (*rp && *rp != '"') {
+                h ^= (uint8_t)*rp++;
+                h *= 16777619u;
+            }
+            h ^= '|';
+            h *= 16777619u;
+        }
+        if (s_bind_hash != 0 && h != s_bind_hash) {
+            ESP_LOGI(TAG, "[buzzer] binding received -> two beeps");
+            buzzer_beep(60);
+            vTaskDelay(pdMS_TO_TICKS(80));
+            buzzer_beep(60);
+        }
+        s_bind_hash = h;
+    }
 }
 
 /* --------------------------------------------------------------------- NVS */
@@ -1669,7 +1697,7 @@ static void sync_task(void *arg)
             s_clear_now = false;
             int removed = s_sd_ok ? storage_clear_pending() : 0;
             ESP_LOGI(TAG, "[sd] cleared %d local queued tap(s)", removed);
-            lcd_show_temp("Queue", s_sd_ok ? "cleared" : "no SD", 2000);
+            lcd_show_temp("Queue", s_sd_ok ? "cleared" : "empty", 2000);
         }
 
         /* Upload card taps: on demand (button / fresh tap / WiFi up) and
@@ -1840,7 +1868,7 @@ void app_main(void)
     buttons_init();
 
     if (lcd_ok) {
-        lcd_show_temp("Shusseki", s_sd_ok ? "SD ready" : "SD missing", 2500);
+        lcd_show_temp("Shusseki", s_sd_ok ? "SD ready" : STA_SSID, 2500);
     }
 
     wifi_init();

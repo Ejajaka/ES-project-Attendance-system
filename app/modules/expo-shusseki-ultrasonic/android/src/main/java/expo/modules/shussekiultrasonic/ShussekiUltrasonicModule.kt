@@ -84,8 +84,8 @@ class ShussekiUltrasonicModule : Module() {
   // --- encode: alternating two-tone burst stamp ----------------------
 
   /** Stamp tones alternate every burst: A, B, A, B. */
-  private val stampFreqA = 4500.0
-  private val stampFreqB = 4450.0
+  private val stampFreqA = 20000.0
+  private val stampFreqB = 19600.0
   private val burstMs = 120L
   private val bursts = 4
   private val burstGapMs = 220L
@@ -135,12 +135,12 @@ class ShussekiUltrasonicModule : Module() {
 
   private val frameMs = 20L
   /** Per-tone off-frequency neighbours used as the noise reference. */
-  private val refFreqA = 5000.0
-  private val refFreqB = 4000.0
+  private val refFreqA = 21000.0
+  private val refFreqB = 18500.0
   /** Each tone must dominate its neighbour for at least this window fraction. */
-  private val minOnFraction = 0.12
+  private val minOnFraction = 0.08
   /** A frame counts as "on tone" when the tone is this much above its neighbour. */
-  private val onToneRatio = 3.0
+  private val onToneRatio = 2.0
   /**
    * ANTI-SILENCE GUARD ONLY — deliberately NOT a power gate.
    * Peak magnitude below this means the mic path is unreadable (digital
@@ -150,7 +150,7 @@ class ShussekiUltrasonicModule : Module() {
    * worst mic placement), so any real amp+speaker at a plausible hearing
    * distance passes comfortably; only a dead path fails it.
    */
-  private val minPeakTone = 1e5
+  private val minPeakTone = 1e4
 
   private fun detectPresence(timeoutMs: Long): Map<String, Any?> {
     val minBuf = AudioRecord.getMinBufferSize(

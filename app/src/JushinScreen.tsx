@@ -13,6 +13,7 @@ import {
   type DeviceReport,
   type LinkSummary,
   type BiometricCheck,
+  type UltrasonicObservation,
 } from "shared";
 import { NativeSensors } from "./lib/nativeSensors";
 import { ATLAS_SSID, type Settings } from "./settings";
@@ -99,6 +100,7 @@ export default function JushinScreen({
   const [bio, setBio] = useState("not performed");
   const [bioOk, setBioOk] = useState<boolean | null>(null);
   const [lastReport, setLastReport] = useState<DeviceReport | null>(null);
+  const [ultraPreview, setUltraPreview] = useState<UltrasonicObservation | null>(null);
   const [lastResult, setLastResult] = useState<ReportResult | null>(null);
   const [local, setLocal] = useState<LocalConfidence | null>(null);
   const [ticks, setTicks] = useState(0);
@@ -114,7 +116,6 @@ export default function JushinScreen({
   const [enrollId, setEnrollId] = useState(settings.studentId ?? "");
   const [enrollName, setEnrollName] = useState(settings.studentName ?? "");
   const [enrollRfid, setEnrollRfid] = useState("");
-  const [editing, setEditing] = useState(false);
   const [enrollMsg, setEnrollMsg] = useState<string | null>(null);
   const [traceReset, setTraceReset] = useState(0);
   const [signalVerdict, setSignalVerdict] = useState<boolean | null>(null);
@@ -157,20 +158,41 @@ export default function JushinScreen({
   // server as soon as the app opens, without requiring Start attendance.
   useEffect(() => {
     if (!identity?.rfidUid) return;
+    const rfidUid = identity.rfidUid;
+    if (!rfidUid) return;
+    const sensors = sensorsRef.current ?? new NativeSensors();
+    sensorsRef.current = sensors;
     void (async () => {
+      // Bind over the PC hotspot (the server's own network) first — this is
+      // the reliable path. `atlas`/NAPT is only needed for room attendance.
+      const bindNets = [
+        { ssid: "Shusseki-Room", pass: "shusseki123" },
+        {
+          ssid: settings.soshinSsid || ATLAS_SSID,
+          pass: settings.soshinPass || undefined,
+        },
+      ];
+      for (const net of bindNets) {
+        try {
+          await sensors.wifi.joinSoshin(net.ssid, net.pass);
+          break;
+        } catch {
+          /* try the next network */
+        }
+      }
       const sessionOk = await ensureSession(serverUrl, {
         sessionId: settings.sessionId,
         roomId: settings.roomId,
         secret: settings.secret,
       });
       if (!sessionOk) return;
-      await bindRfid(serverUrl, settings.sessionId, {
+      const bindOk = await bindRfid(serverUrl, settings.sessionId, {
         studentId: identity.studentId,
         studentName: identity.studentName,
-        rfidUid: identity.rfidUid,
+        rfidUid,
       });
       console.log(
-        `[identity] bound ${identity.rfidUid} -> ${identity.studentName} · ${identity.studentId}`,
+        `[identity] bind ${bindOk ? "ok" : "FAILED"} ${rfidUid} -> ${identity.studentName} · ${identity.studentId}`,
       );
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -208,6 +230,40 @@ export default function JushinScreen({
     };
     void poll();
     const id = setInterval(poll, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [running]);
+
+  // Standby ultrasound preview: listen even before Start so the room's
+  // 20 kHz stamp is visible/detectable in the Receiver UI.
+  useEffect(() => {
+    if (running) return;
+    const sensors = sensorsRef.current ?? new NativeSensors();
+    sensorsRef.current = sensors;
+    void sensors.ultrasonic?.requestPermissions?.().catch(() => {});
+    let cancelled = false;
+    let busy = false;
+    const poll = async () => {
+      if (cancelled || busy) return;
+      busy = true;
+      try {
+        const u = await sensors.ultrasonic?.observe(1200);
+        if (!cancelled && u) {
+          setUltraPreview(u);
+          console.log(
+            `[ultra] received=${u.received} valid=${u.valid} snr=${u.snr ?? "-"} miss=${u.missReason ?? "-"}`,
+          );
+        }
+      } catch {
+        /* best effort */
+      } finally {
+        busy = false;
+      }
+    };
+    void poll();
+    const id = setInterval(poll, 2500);
     return () => {
       cancelled = true;
       clearInterval(id);
@@ -269,6 +325,15 @@ export default function JushinScreen({
     // Send the UID binding now so the room reader works without Start.
     let bound = true;
     if (next.rfidUid) {
+      // Join the room network first, otherwise the server is unreachable.
+      try {
+        await sensors.wifi.joinSoshin(
+          settings.soshinSsid || ATLAS_SSID,
+          settings.soshinPass || undefined,
+        );
+      } catch {
+        /* best effort */
+      }
       const sessionOk = await ensureSession(serverUrl, {
         sessionId: settings.sessionId,
         roomId: settings.roomId,
@@ -289,7 +354,6 @@ export default function JushinScreen({
     } else {
       setEnrollMsg(null);
     }
-    setEditing(!bound);
   };
 
   /**
@@ -541,7 +605,7 @@ export default function JushinScreen({
       </View>
       <ScrollView className="flex-1">
         <View className="gap-4 p-4 pb-8">
-          {!identity || editing ? (
+          {!identity ? (
             <Card>
               <CardHeader>
                 <CardTitle>Enroll this phone</CardTitle>
@@ -596,18 +660,9 @@ export default function JushinScreen({
                 {identity.studentName} · {identity.studentId}
                 {identity.rfidUid ? ` · RFID ${identity.rfidUid}` : ""}
               </Text>
-              <View className="flex-row items-center gap-2">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onPress={() => setEditing(true)}
-                >
-                  <Text>Edit</Text>
-                </Button>
-                <Badge variant="secondary">
-                  <Text>enrolled</Text>
-                </Badge>
-              </View>
+              <Badge variant="secondary">
+                <Text>enrolled</Text>
+              </Badge>
             </View>
           )}
           {/* PRESENCE — verdict + honest "last seen" countdown */}
@@ -675,6 +730,18 @@ export default function JushinScreen({
               <CardDescription>local rule + per-channel confidence</CardDescription>
             </CardHeader>
             <CardContent className="gap-2">
+              {!running && (
+                <DataRow
+                  label="Ultrasonic (standby)"
+                  value={
+                    ultraPreview == null
+                      ? "starting…"
+                      : ultraPreview.received
+                        ? `heard${ultraPreview.snr != null ? ` · snr ${ultraPreview.snr.toFixed(1)}` : ""}`
+                        : `not heard · ${ultraPreview.missReason ?? "no_signal"}`
+                  }
+                />
+              )}
               {local ? (
                 <>
                   <View className="gap-1">
