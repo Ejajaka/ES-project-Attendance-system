@@ -329,7 +329,7 @@ static void button_task(void *arg)
 /* --------------------------------------------------------------- ultrasonic */
 
 /**
- * Restores the Soshin ultrasonic presence stamp: four alternating 1.8/2.6 kHz
+ * Restores the Soshin ultrasonic presence stamp: four alternating 4.5/4.45 kHz
  * bursts (120 ms on, 220 ms gap) then a pause, repeating. Drive a piezo or a
  * small amp+speaker from GPIO27.
  */
@@ -339,7 +339,7 @@ static void ultrasonic_init(void)
         .speed_mode = LEDC_LOW_SPEED_MODE,
         .duty_resolution = LEDC_TIMER_10_BIT,
         .timer_num = LEDC_TIMER_0,
-        .freq_hz = 2600,
+        .freq_hz = 4500,
         .clk_cfg = LEDC_AUTO_CLK,
     };
     if (ledc_timer_config(&timer) != ESP_OK) {
@@ -359,13 +359,13 @@ static void ultrasonic_init(void)
         ESP_LOGW(TAG, "ultrasonic LEDC channel init failed");
         return;
     }
-    ESP_LOGI(TAG, "ultrasonic stamp on GPIO%d (1.8/2.6 kHz)", ULTRASONIC_GPIO);
+    ESP_LOGI(TAG, "ultrasonic stamp on GPIO%d (4.5 kHz)", ULTRASONIC_GPIO);
 }
 
 static void ultrasonic_task(void *arg)
 {
     (void)arg;
-    static const uint32_t freqs[4] = {1800, 2600, 1800, 2600};
+    static const uint32_t freqs[4] = {4500, 4450, 4500, 4450};
     for (;;) {
         for (int i = 0; i < 4; i++) {
             ledc_set_freq(LEDC_LOW_SPEED_MODE, LEDC_TIMER_0, freqs[i]);
@@ -1235,7 +1235,10 @@ static esp_err_t node_rfid_get(httpd_req_t *req)
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
     lcd_show_temp("Card", roll, 2500);
-    buzzer_beep(100);
+    /* New card mapping saved: two beeps (same signal as an unmapped tap). */
+    buzzer_beep(60);
+    vTaskDelay(pdMS_TO_TICKS(80));
+    buzzer_beep(60);
     return ESP_OK;
 }
 
@@ -1667,7 +1670,6 @@ static void sync_task(void *arg)
             int removed = s_sd_ok ? storage_clear_pending() : 0;
             ESP_LOGI(TAG, "[sd] cleared %d local queued tap(s)", removed);
             lcd_show_temp("Queue", s_sd_ok ? "cleared" : "no SD", 2000);
-            buzzer_beep(150);
         }
 
         /* Upload card taps: on demand (button / fresh tap / WiFi up) and
@@ -1683,7 +1685,6 @@ static void sync_task(void *arg)
                 ESP_LOGI(TAG, "[sd] uploaded %d tap(s), %d still queued",
                          uploaded, left);
                 lcd_show_temp("Synced", left ? "more pending" : "all taps", 1600);
-                buzzer_beep(120);
             } else if (left > 0) {
                 ESP_LOGI(TAG, "[sd] %d tap(s) pending (server unreachable)",
                          left);
@@ -1853,6 +1854,8 @@ void app_main(void)
     xTaskCreate(button_task, "btn", 2048, NULL, 3, NULL);
     xTaskCreate(ultrasonic_task, "ultra", 2048, NULL, 3, NULL);
 }
+
+
 
 
 

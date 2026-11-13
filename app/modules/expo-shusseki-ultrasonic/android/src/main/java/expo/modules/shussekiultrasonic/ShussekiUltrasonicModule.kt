@@ -18,7 +18,7 @@ import expo.modules.kotlin.modules.ModuleDefinition
  * Chassis (8-14kHz chirp) proved too weak on real phone speakers/mics at
  * useful volume, so the stamp is FIXED, clearly-audible TONE BURSTS in the
  * ~1.8-2.6kHz band — in every phone's efficient passband, ALTERNATING between
- * two frequencies (A=1800 Hz, B=2600 Hz) every burst. Presence is decided by a
+ * two frequencies (A=4500 Hz, B=4450 Hz) every burst. Presence is decided by a
  * gain-invariant test: each tone frequency vs its own neighbour (off-freq)
  * reference, required to dominate for a fraction of the listen window.
  * Alternating defeats any stationary narrowband noise source: a jammer parked
@@ -84,8 +84,8 @@ class ShussekiUltrasonicModule : Module() {
   // --- encode: alternating two-tone burst stamp ----------------------
 
   /** Stamp tones alternate every burst: A, B, A, B. */
-  private val stampFreqA = 1800.0
-  private val stampFreqB = 2600.0
+  private val stampFreqA = 4500.0
+  private val stampFreqB = 4450.0
   private val burstMs = 120L
   private val bursts = 4
   private val burstGapMs = 220L
@@ -135,8 +135,8 @@ class ShussekiUltrasonicModule : Module() {
 
   private val frameMs = 20L
   /** Per-tone off-frequency neighbours used as the noise reference. */
-  private val refFreqA = 2300.0
-  private val refFreqB = 3200.0
+  private val refFreqA = 5000.0
+  private val refFreqB = 4000.0
   /** Each tone must dominate its neighbour for at least this window fraction. */
   private val minOnFraction = 0.12
   /** A frame counts as "on tone" when the tone is this much above its neighbour. */
