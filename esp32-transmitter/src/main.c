@@ -10,7 +10,7 @@
  *      company id 0xABCD — the exact payload ShussekiBleModule.kt parses.
  *   3. Raises the fixed open `atlas` SoftAP (no password) for the receiver to
  *      join, and announces its SSID to the fusion server.
- *   4. Emits the alternating 1.8/2.6 kHz burst presence stamp on LEDC pin
+ *   4. Emits the alternating 20/19.6 kHz burst presence stamp on LEDC pin
  *      ULTRASONIC_GPIO.
  *   5. Serves a clock + config endpoint on the SoftAP (port 80): a phone joined
  *      to `atlas` can POST /api/node/time to fix the node's clock (the only
@@ -56,8 +56,8 @@
 #include "esp_gap_ble_api.h"
 
 #include "lcd.h"
+#include "mapping.h"
 #include "rfid.h"
-#include "storage.h"
 
 static const char *TAG = "shusseki-tx";
 
@@ -108,32 +108,17 @@ static esp_netif_t *s_ap_netif = NULL;
 /*
  * Extra hardware (see docs/hardware-wiring.md):
  *   RFID MFRC522  : SPI2, CS=5, RST=16 (SCK=18 MISO=19 MOSI=23)
- *   microSD       : SPI2, CS=4
- *   2 buttons     : 32 = sync now (short press), 33 = clear queue (hold 2 s)
  *   buzzer        : 26 (active-high)
- *   ultrasonic TX : 27 (LEDC, 1.8/2.6 kHz alternating bursts)
+ *   ultrasonic TX : 27 (LEDC, 20/19.6 kHz alternating bursts)
  */
 #define RFID_CS_GPIO 5
 #define RFID_RST_GPIO 17
-#define SD_CS_GPIO 4
 #define SPI_SCK_GPIO 18
 #define SPI_MISO_GPIO 19
 #define SPI_MOSI_GPIO 23
-#define BTN_SYNC_GPIO 32
-#define BTN_CLEAR_GPIO 33
 #define BUZZER_GPIO 26
 #define ULTRASONIC_GPIO 27
-/** How often queued RFID taps are retried while the STA is up. */
-#define SYNC_PERIOD_MS 15000
-/**
- * microSD is optional. While the SD adapter is not physically mounted, leave
- * this at 0: a failed FAT mount on the shared SPI bus can disturb the RFID
- * reader. Set to 1 once the card adapter is wired.
- */
-#ifndef SD_ENABLED
-#define SD_ENABLED 0
-#endif
-/** Minimal hardware smoke test: LCD + RC522 only (no WiFi/BLE/server/SD). */
+/** Minimal hardware smoke test: LCD + RC522 only (no WiFi/BLE/server). */
 #ifndef RFID_TEST_MODE
 #define RFID_TEST_MODE 0
 #endif
@@ -142,16 +127,10 @@ static esp_netif_t *s_ap_netif = NULL;
 static volatile bool s_attendance_now = false;
 /** STA link state, shown on LCD line 2. */
 static volatile bool s_wifi_up = false;
-/** Set by the buttons / a card tap to run an SD queue sync now. */
-static volatile bool s_sync_now = false;
 /** Set when the STA gets an IP so the session is announced immediately. */
 static volatile bool s_announce_now = false;
 /** Last card UID, shown on the SoftAP registration page. */
 static char s_last_uid[16] = "";
-/** Set by the clear button (hold 2 s). */
-static volatile bool s_clear_now = false;
-/** microSD mounted successfully. */
-static bool s_sd_ok = false;
 /** Temporary LCD text requested by another task (printed by the sync task). */
 static char s_msg0[64];
 static char s_msg1[17];
@@ -249,7 +228,7 @@ static void led_set(bool on)
              on ? "connected" : "down");
 }
 
-/* --------------------------------------------------------- buzzer + buttons */
+/* --------------------------------------------------------- buzzer --------- */
 
 static void buzzer_init(void)
 {
@@ -273,65 +252,10 @@ static void buzzer_beep(int ms)
     gpio_set_level(BUZZER_GPIO, 0);
 }
 
-static void buttons_init(void)
-{
-    gpio_config_t io = {
-        .pin_bit_mask = (1ULL << BTN_SYNC_GPIO) | (1ULL << BTN_CLEAR_GPIO),
-        .mode = GPIO_MODE_INPUT,
-        .pull_up_en = GPIO_PULLUP_ENABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE,
-    };
-    gpio_config(&io);
-}
-
-/**
- * BTN1 (GPIO32): short press → upload the SD queue now.
- * BTN2 (GPIO33): hold 2 s → clear the SD queue (server rows are untouched).
- * The actual SD/HTTP work happens in sync_task so the two never race.
- */
-static void button_task(void *arg)
-{
-    (void)arg;
-    int sync_held = 0;
-    int clear_held = 0;
-    /* Arm only after seeing the pin high: a miswired/stuck-low button must not
-       fire a clear at boot. The raw levels are logged in the [hw] summary. */
-    bool sync_armed = false;
-    bool clear_armed = false;
-    for (;;) {
-        bool sync_low = gpio_get_level(BTN_SYNC_GPIO) == 0;
-        bool clear_low = gpio_get_level(BTN_CLEAR_GPIO) == 0;
-
-        if (!sync_low) sync_armed = true;
-        if (!clear_low) clear_armed = true;
-
-        if (sync_armed && sync_low) {
-            sync_held++;
-        } else {
-            if (sync_armed && sync_held >= 2) {
-                ESP_LOGI(TAG, "[btn] sync requested");
-                s_sync_now = true;
-            }
-            sync_held = 0;
-        }
-        if (clear_armed && clear_low) {
-            clear_held++;
-            if (clear_held == 200) { /* 200 × 10 ms = 2 s */
-                ESP_LOGI(TAG, "[btn] clear-local requested (hold)");
-                s_clear_now = true;
-            }
-        } else {
-            clear_held = 0;
-        }
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-}
-
 /* --------------------------------------------------------------- ultrasonic */
 
 /**
- * Restores the Soshin ultrasonic presence stamp: four alternating 4.5/4.45 kHz
+ * Restores the Soshin ultrasonic presence stamp: four alternating 20/19.6 kHz
  * bursts (120 ms on, 220 ms gap) then a pause, repeating. Drive a piezo or a
  * small amp+speaker from GPIO27.
  */
@@ -400,7 +324,7 @@ static void spi_init(void)
     }
 }
 
-/* ---------------------------------------------------------------- RFID + SD */
+/* ---------------------------------------------------------------- RFID */
 
 static void json_escape(const char *in, char *out, size_t outsz)
 {
@@ -417,11 +341,6 @@ static void json_escape(const char *in, char *out, size_t outsz)
         }
     }
     out[o] = '\0';
-}
-
-static int post_rfid(const char *json)
-{
-    return http_post_json("/api/sessions/" PRESET_SESSION_ID "/rfid", json);
 }
 
 /** Extract a string field from the small JSON responses we consume. */
@@ -442,7 +361,7 @@ static bool json_get(const char *json, const char *key, char *out, size_t outsz)
     return o > 0;
 }
 
-/** One card tap: card record → SD mapping → UID, mirror + queue for server. */
+/** One card tap: card record -> NVS mapping -> UID, then report it. */
 static void handle_card(const char *uid_hex, const char *record)
 {
     snprintf(s_last_uid, sizeof(s_last_uid), "%s", uid_hex);
@@ -480,13 +399,12 @@ static void handle_card(const char *uid_hex, const char *record)
             }
         }
     }
-
-    /* 2. UID → roll/name mapping on the microSD card. */
+    /* 2. UID -> roll/name mapping stored in NVS. */
     char local_roll[64] = "";
     char local_name[64] = "";
     bool had_local = false;
     if (!have_details) {
-        had_local = storage_lookup_uid(uid_hex, local_roll, sizeof(local_roll),
+        had_local = mapping_lookup_uid(uid_hex, local_roll, sizeof(local_roll),
                                        local_name, sizeof(local_name));
         if (had_local) {
             snprintf(roll, sizeof(roll), "%s", local_roll);
@@ -514,9 +432,8 @@ static void handle_card(const char *uid_hex, const char *record)
              uid_hex, er, en, (long long)at);
 
     /* Online: the server's phone-entered UID mapping is authoritative and its
-       response carries the final name/roll for the LCD. Offline: queue on SD
-       (or keep the local mapping) and retry later. */
-    bool queued = false;
+       response carries the final name/roll for the LCD. Offline: use the NVS
+       mapping and report the tap when the link returns. */
     bool server_matched = false;
     if (s_wifi_up) {
         char resp[512];
@@ -538,13 +455,7 @@ static void handle_card(const char *uid_hex, const char *record)
                 server_matched = strcmp(ssource, "rfid") != 0;
             }
             have_details = server_matched;
-        } else {
-            queued = s_sd_ok && storage_enqueue(json);
-            s_sync_now = queued;
         }
-    } else {
-        queued = s_sd_ok && storage_enqueue(json);
-        s_sync_now = queued;
     }
     /* Persist a real server-resolved binding (never a placeholder), so future
        taps use the same name and roll even with the phone/server off. */
@@ -553,10 +464,7 @@ static void handle_card(const char *uid_hex, const char *record)
     if (server_matched && real_mapping &&
         (!had_local || strcmp(local_roll, roll) != 0 ||
          strcmp(local_name, name) != 0)) {
-        storage_add_mapping(uid_hex, roll, name);
-    }
-    if (s_sd_ok) {
-        storage_log_scan(at, uid_hex, roll, name);
+        mapping_add(uid_hex, roll, name);
     }
 
     if (have_details) {
@@ -572,8 +480,8 @@ static void handle_card(const char *uid_hex, const char *record)
                              ? "card"
                              : server_matched ? "server"
                                               : (have_details ? "local" : "uid");
-    ESP_LOGI(TAG, "[rfid] uid=%s roll=%s name=%s source=%s queued=%d",
-             uid_hex, roll, name, source, queued);
+    ESP_LOGI(TAG, "[rfid] uid=%s roll=%s name=%s source=%s",
+             uid_hex, roll, name, source);
 }
 
 /** Poll the reader; a card left on the antenna is re-reported after 3 s. */
@@ -921,7 +829,7 @@ static int http_get_text(const char *path, char *out, size_t outsz)
 static void refresh_attendance_lcd(void)
 {
     lcd_tick_recover();
-    /* A card tap / button message owns the LCD for a moment. */
+    /* A card tap message owns the LCD for a moment. */
     if (now_ms() < s_lcd_temp_until_ms) {
         return;
     }
@@ -1173,9 +1081,9 @@ static esp_err_t node_get(httpd_req_t *req)
     snprintf(json, sizeof(json),
              "{\"nodeId\":\"%s\",\"sessionId\":\"%s\",\"roomId\":\"%s\","
              "\"ssid\":\"%s\",\"serverUrl\":\"%s\",\"unix\":%ld,"
-             "\"lastUid\":\"%s\",\"sd\":%s}",
+             "\"lastUid\":\"%s\"}",
              NODE_ID, PRESET_SESSION_ID, PRESET_ROOM_ID, AP_SSID, s_server_url,
-             (long)time(NULL), s_last_uid, s_sd_ok ? "true" : "false");
+             (long)time(NULL), s_last_uid);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, json, HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
@@ -1201,8 +1109,7 @@ static void url_decode(char *s)
 /**
  * SoftAP card registration page: tap a card, open http://192.168.4.1/ on any
  * phone joined to `atlas`, and bind that UID to a roll/name. The binding is
- * written to /sdcard/rfid.csv (when present) and mirrored in NVS, so UID-only
- * cards can still mark attendance with full details.
+ * stored in NVS, so UID-only cards can still mark attendance with full details.
  */
 static esp_err_t node_index_get(httpd_req_t *req)
 {
@@ -1250,7 +1157,7 @@ static esp_err_t node_rfid_get(httpd_req_t *req)
         send_status(req, "400 Bad Request");
         return ESP_OK;
     }
-    bool saved = storage_add_mapping(uid, roll, name);
+    bool saved = mapping_add(uid, roll, name);
     ESP_LOGI(TAG, "[rfid] bind uid=%s roll=%s name=%s saved=%d", uid, roll,
              name, saved);
     char html[512];
@@ -1389,7 +1296,6 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id,
         led_set(true);
         s_wifi_up = true;
         s_attendance_now = true;
-        s_sync_now = true;
         s_announce_now = true;
         // Route SoftAP clients out through the STA network (reaches the server).
         if (s_ap_netif && esp_netif_napt_enable(s_ap_netif) == ESP_OK) {
@@ -1577,33 +1483,23 @@ static void sync_task(void *arg)
     TickType_t last_poll = xTaskGetTickCount();
     TickType_t last_attendance =
         xTaskGetTickCount() - pdMS_TO_TICKS(ATTENDANCE_PERIOD_MS);
-    TickType_t last_sync = xTaskGetTickCount() - pdMS_TO_TICKS(SYNC_PERIOD_MS);
     bool announce_backoff = false;
     bool server_configured = strlen(s_server_url) > 0;
     TickType_t boot_ticks = xTaskGetTickCount();
-    TickType_t last_sd_retry = 0;
     bool hw_logged = false;
 
     for (;;) {
         TickType_t now_ticks = xTaskGetTickCount();
 
         /* One delayed summary so a serial monitor attached after flashing still
-           sees whether the SD / RFID / input hardware initialised. */
+           sees whether the RFID / buzzer / ultrasound hardware initialised. */
         if (!hw_logged && now_ticks - boot_ticks >= pdMS_TO_TICKS(4000)) {
             hw_logged = true;
             ESP_LOGI(TAG,
-                     "[hw] sd=%s rfid=%s buzzer=GPIO%d ultrasound=GPIO%d "
-                     "buttons=%d/%d levels=%d/%d pending=%d",
-                     s_sd_ok ? "ok" : "missing",
+                     "[hw] rfid=%s buzzer=GPIO%d ultrasound=GPIO%d",
                      rfid_ready() ? "ok" : "missing", BUZZER_GPIO,
-                     ULTRASONIC_GPIO, BTN_SYNC_GPIO, BTN_CLEAR_GPIO,
-                     gpio_get_level(BTN_SYNC_GPIO),
-                     gpio_get_level(BTN_CLEAR_GPIO), storage_pending_count());
+                     ULTRASONIC_GPIO);
         }
-
-        /* SD retry is intentionally off while testing without a card: each
-           mount attempt stalls the SPI bus shared with the RFID reader. */
-        (void)last_sd_retry;
 
         /* Re-pick the runtime server URL so a fresh /api/node/config is honoured. */
         bool configured = strlen(s_server_url) > 0;
@@ -1658,7 +1554,7 @@ static void sync_task(void *arg)
             }
         }
 
-        /* Temporary card/button message requested by another task. */
+        /* Temporary card message requested by another task. */
         if (s_msg_pending) {
             s_msg_pending = false;
             lcd_print(0, s_msg0);
@@ -1689,33 +1585,6 @@ static void sync_task(void *arg)
                     win[16] = '\0';
                     lcd_print(0, win);
                 }
-            }
-        }
-
-        /* Button 2: drop the local upload queue (server rows are untouched). */
-        if (s_clear_now) {
-            s_clear_now = false;
-            int removed = s_sd_ok ? storage_clear_pending() : 0;
-            ESP_LOGI(TAG, "[sd] cleared %d local queued tap(s)", removed);
-            lcd_show_temp("Queue", s_sd_ok ? "cleared" : "empty", 2000);
-        }
-
-        /* Upload card taps: on demand (button / fresh tap / WiFi up) and
-           periodically while the STA is connected. */
-        if (configured && s_wifi_up && s_sd_ok &&
-            (s_sync_now ||
-             now_ticks - last_sync >= pdMS_TO_TICKS(SYNC_PERIOD_MS))) {
-            s_sync_now = false;
-            last_sync = now_ticks;
-            int uploaded = storage_sync_pending(post_rfid);
-            int left = storage_pending_count();
-            if (uploaded > 0) {
-                ESP_LOGI(TAG, "[sd] uploaded %d tap(s), %d still queued",
-                         uploaded, left);
-                lcd_show_temp("Synced", left ? "more pending" : "all taps", 1600);
-            } else if (left > 0) {
-                ESP_LOGI(TAG, "[sd] %d tap(s) pending (server unreachable)",
-                         left);
             }
         }
 
@@ -1760,21 +1629,11 @@ void app_main(void)
 
 #if RFID_TEST_MODE
     /*
-     * Standalone reader smoke test: no NVS, WiFi, BLE, server or SD. The LCD
+     * Standalone reader smoke test: no NVS, WiFi, BLE or server. The LCD
      * shows the reader state and the hex UID of every card placed on the coil.
      */
     bool t_lcd_ok = lcd_init();
     spi_init();
-    /* Park only the (unused) SD CS high; the SPI driver owns the RFID CS. */
-    gpio_config_t t_sd_cs = {
-        .pin_bit_mask = 1ULL << SD_CS_GPIO,
-        .mode = GPIO_MODE_OUTPUT,
-        .pull_up_en = GPIO_PULLUP_ENABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE,
-    };
-    gpio_config(&t_sd_cs);
-    gpio_set_level(SD_CS_GPIO, 1);
     bool reader_ok = rfid_init();
     buzzer_init();
     if (t_lcd_ok) {
@@ -1841,34 +1700,25 @@ void app_main(void)
     }
 
     spi_init();
-    /* Park both chip-selects high before probing either SPI device: a floating
-       RC522 CS during the SD mount can otherwise hold MISO and break detection. */
+    /* Park the RFID chip-select high before probing the reader. */
     gpio_config_t cs = {
-        .pin_bit_mask = (1ULL << SD_CS_GPIO) | (1ULL << RFID_CS_GPIO),
+        .pin_bit_mask = 1ULL << RFID_CS_GPIO,
         .mode = GPIO_MODE_OUTPUT,
         .pull_up_en = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type = GPIO_INTR_DISABLE,
     };
     gpio_config(&cs);
-    gpio_set_level(SD_CS_GPIO, 1);
     gpio_set_level(RFID_CS_GPIO, 1);
     if (!rfid_init()) {
         ESP_LOGW(TAG, "RFID reader unavailable (check 3.3V/SPI wiring)");
     }
-#if SD_ENABLED
-    s_sd_ok = storage_init();
-#else
-    s_sd_ok = false;
-    ESP_LOGW(TAG, "microSD disabled (SD_ENABLED=0) — RFID uploads directly, "
-                  "UID mappings use NVS");
-#endif
+
     buzzer_init();
     ultrasonic_init();
-    buttons_init();
 
     if (lcd_ok) {
-        lcd_show_temp("Shusseki", s_sd_ok ? "SD ready" : STA_SSID, 2500);
+        lcd_show_temp("Shusseki", STA_SSID, 2500);
     }
 
     wifi_init();
@@ -1879,11 +1729,5 @@ void app_main(void)
     xTaskCreate(sync_task, "sync", 6144, NULL, 5, NULL);
     xTaskCreate(ble_task, "ble", 6144, NULL, 5, NULL);
     xTaskCreate(rfid_task, "rfid", 4096, NULL, 4, NULL);
-    xTaskCreate(button_task, "btn", 2048, NULL, 3, NULL);
     xTaskCreate(ultrasonic_task, "ultra", 2048, NULL, 3, NULL);
 }
-
-
-
-
-

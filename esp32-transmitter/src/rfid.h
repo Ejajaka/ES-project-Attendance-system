@@ -7,7 +7,7 @@
 /**
  * Minimal MFRC522 (13.56 MHz) SPI reader.
  *
- * Shares SPI2 with the microSD card; the bus itself must be initialised
+ * Uses SPI2; the bus itself must be initialised
  * before rfid_init() is called. Only 4-byte UID cards (MIFARE Classic etc.)
  * are supported, which covers the cards used for this project.
  */

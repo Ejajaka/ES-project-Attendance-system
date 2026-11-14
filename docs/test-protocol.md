@@ -1,6 +1,6 @@
 # Test Protocol — Shusseki Comparative Evaluation
 
-This protocol operationalises PLAN.md §2 and §4. The comparative claim is about
+This protocol operationalises the research plan. The comparative claim is about
 how well each modality **detects true presence** *and* **rejects near-miss
 non-presence**. Both halves must be tested — otherwise "room-level" is undefined.
 

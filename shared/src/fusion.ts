@@ -2,7 +2,7 @@ import type { Modality } from "./types";
 
 /**
  * Combine per-modality confidences into a single fused presence probability.
- * See PLAN.md §2 — the research contribution is whether fusing beats any one
+ * The research contribution is whether fusing beats any one
  * signal alone, so the combiner is pluggable and compared side by side.
  */
 

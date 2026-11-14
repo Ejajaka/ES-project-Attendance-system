@@ -23,7 +23,7 @@ function nodeConfidence(rssi: number, threshold: number, scale: number): number 
 
 /**
  * BLE-only confidence. With several nodes per room, the combining `rule`
- * decides what the number means (see PLAN.md open questions): `max`/`best`
+ * decides what the number means: `max`/`best`
  * treat any strong node as "within walkable distance"; `avg` is stricter.
  */
 export function bleConfidence(input: BleConfidenceInput): number {

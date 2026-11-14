@@ -1,173 +1,130 @@
-# Comparative Evaluation of BLE, WiFi, and Ultrasonic Signals for Room-Level Continuous Attendance Monitoring
+# Shusseki - continuous room attendance with BLE, WiFi and ultrasound
 
-## Overview
+Shusseki is a room-level continuous attendance system. A fixed ESP32 node
+advertises a BLE rolling code, hosts the room WiFi network and emits an
+ultrasonic presence stamp. Phones in the room report BLE, WiFi and ultrasonic
+measurements to a fusion server, which maintains a live roster and a human
+register. An RFID reader on the node also marks students who tap a card.
 
-Conventional attendance systems rely on active participation (swiping a card, signing a sheet, scanning a QR code), record presence at a single point in time, and often need extra anti-spoofing measures bolted on afterward. This project explores a passive alternative: fixed IoT nodes installed in a room continuously sense a phone's BLE, WiFi, and ultrasonic signals and report them to a server, which fuses the three signal types to determine whether a person is present in that specific room — for the whole duration they're there, not just at one checkpoint.
+The project compares BLE-only, WiFi-only, ultrasonic-only and fused presence
+against a manually counted ground truth.
 
-An Android app running on each user's phone acts as the mobile-side signal source, and performs a lightweight on-device biometric check (fingerprint/face) simply to give reasonable confidence that the phone is being carried by its actual owner rather than left behind by someone else to fake presence. This check is a supporting safeguard, not the core research focus.
-
-## Research Question
-
-Which single signal — BLE, WiFi, or ultrasonic — best supports accurate room-level presence detection, and does fusing them outperform any one signal alone?
-
-## Core Idea
-
-- **Fixed IoT nodes** (one or more per room) continuously capture:
-  - BLE advertisement/RSSI data from the phone
-  - WiFi RSSI data from the phone
-  - Ultrasonic signal data (emitted/received between node and phone)
-- Each node reports these raw values to a **central server**.
-- The server evaluates each signal individually and in fusion to classify room presence.
-- **Ground truth** for evaluation is established manually — a human headcount in the controlled test room — against which each method's output is compared.
-- The Android app additionally performs an **on-device biometric check** (not periodic, just enough to establish it's the owner using the phone) as a basic anti-spoofing measure.
-
-## What Makes This "Comparative"
-
-The main contribution isn't the system alone — it's benchmarking:
-1. **BLE-only** detection accuracy
-2. **WiFi-only** detection accuracy
-3. **Ultrasonic-only** detection accuracy
-4. **Fused (BLE + WiFi + Ultrasonic)** detection accuracy
-
-against the manually counted ground truth, in a controlled environment, to determine which modality (or combination) is most reliable for distinguishing "in this room" from "not in this room."
-
-## Status
-
-Early-stage research project. See `PLAN.md` for the working plan, open questions, and next steps.
-
-## Repository Structure
-
-npm-workspaces monorepo (see `docs/adr/0005-monorepo-structure.md`):
+## Components
 
 ```
-/shared/      # Pure, framework-free logic: rolling code, per-modality confidence,
-              #   fusion, evaluation metrics, Zod report schemas. Vitest-tested.
-/server/      # Hono fusion server (runs on Node via @hono/node-server, or
-              #   deploy the same `app` on Cloudflare Workers). Ingests
-              #   reports, re-verifies rolling codes, computes presence + evaluates
-              #   against manual ground truth.
-/app/         # Expo / React Native app with two modes (transmitter/Soshin
-              #   + receiver/Jushin) and the native modules (BLE, WiFi,
-              #   ultrasonic, biometric) under modules/.
-/evaluation/  # Comparative-study runner + scripts (BLE vs WiFi vs Ultrasonic vs Fused).
-/docs/        # ADRs (docs/adr) and the test protocol (docs/test-protocol.md).
-PLAN.md       # Working plan, open questions, order of operations.
-README.md
+/shared/            Pure TypeScript logic: rolling codes, confidence, fusion,
+                    evaluation metrics and report schemas. Vitest-tested.
+/server/            Hono fusion server: ingest reports, verify codes, presence,
+                    roster, attendance register, live dashboard and CSV export.
+/app/               Expo / React Native app:
+                      Soshin (transmitter) - phone-side beacon fallback
+                      Jushin (receiver)    - BLE/WiFi/ultrasound reporting
+                    Native modules for BLE, WiFi, ultrasonic and biometric.
+/esp32-transmitter/ ESP-IDF firmware for the room node:
+                      BLE beacon + open `atlas` SoftAP + NAPT
+                      MFRC522 RFID reader + I2C LCD + active/passive buzzers
+                      20 kHz ultrasonic transmitter on GPIO27
+/evaluation/        Comparative-study runner (BLE / WiFi / ultrasonic / fused).
+/docs/              Wiring, attendance flow, test protocol, runbooks and ADRs.
 ```
+
+The current node build does **not** use a microSD card or push buttons. Card
+bindings live in NVS and taps are posted directly to the server.
 
 ## Quick start
 
-Prerequisites: Node (>=20) + npm and, for the app, the Expo toolchain + a device
-or emulator (the native modules require Android SDK / Xcode to build).
+Prerequisites: Node >= 20 and npm. For the app, use the Expo toolchain and an
+Android device/emulator with the Android SDK.
 
 ```bash
-# install everything (npm workspaces)
+# install workspace dependencies
 npm install
 
-# run all tests (65; shared/server/evaluation/app logic) with Vitest
+# run the full Vitest suite
 npm test
 
-# start the fusion server
-cd server && npm run dev          # http://localhost:8787
+# start the fusion server on http://localhost:8787
+npm run dev:server
 
-# run the comparative evaluation demo
+# run the comparative evaluation sample
 cd evaluation && npm run run:sample
 ```
 
 ### Server API
-- `POST /api/sessions` — create a session (shares the rolling-code secret).
-- `POST /api/reports` — ingest a transmitter/receiver `DeviceReport`.
-- `POST /api/sessions/:id/telemetry` — 0.5 s graph sample (BLE/WiFi RSSI only).
-- `GET  /api/sessions/:id/series` — live BLE/WiFi/SNR series for the dashboard.
-- `GET  /dashboard/:id` — live browser charts (BLE/WiFi RSSI + ultrasonic SNR).
-- `GET  /api/sessions/:id/presence` — latest per-device presence + three-channel link stats.
-- `POST /api/sessions/:id/hotspot` — transmitter publishes its live AutoHotspot.
-- `GET  /api/sessions/:id/hotspot` — receivers read it and auto-join.
-- `POST /api/sessions/:id/ground-truth` — record a manual headcount.
-- `GET  /api/sessions/:id/evaluate` — room-level count error + per-modality metrics.
+
+- `POST /api/sessions` - create a session (shares the rolling-code secret).
+- `POST /api/reports` - ingest a `DeviceReport`.
+- `POST /api/sessions/:id/telemetry` - 0.5 s graph sample.
+- `GET  /api/sessions/:id/series` - live BLE/WiFi/SNR series.
+- `GET  /dashboard/:id` - live browser charts.
+- `GET  /api/sessions/:id/presence` - latest per-device presence.
+- `POST /api/sessions/:id/hotspot` - publish the room hotspot.
+- `GET  /api/sessions/:id/hotspot` - read the room hotspot.
+- `POST /api/sessions/:id/ground-truth` - record a manual headcount.
+- `GET  /api/sessions/:id/evaluate` - count error and per-modality metrics.
+- `GET  /api/sessions/:id/register` - live attendance register.
+- `POST /api/sessions/:id/rfid` - card tap (UID -> student).
+- `POST /api/sessions/:id/rfid/bind` - bind a phone-entered UID to a student.
 
 ### App
+
 ```bash
 cd app
-npx expo start          # then run on Android/iOS
+npx expo start
 ```
-Pick **TRANSMITTER** (room-side, brand Soshin: broadcasts the ultrasonic code
-+ BLE beacon) or **RECEIVER** (phone-side, brand Jushin: joins the open
-`atlas` WiFi network, listens for the code, reports BLE/WiFi). Both devices
-pick the same **preset room** (3 available), which pins roomId, sessionId, and
-rolling-code secret. WiFi is shared: the ESP32 room node hosts `atlas` with no
-password, and every phone joins it. The transmitter can still raise a
-LocalOnlyHotspot as a two-phone demo fallback. Set `EXPO_PUBLIC_SERVER_URL` to
-point at the fusion server (default `http://10.0.2.2:8787` for the Android
-emulator).
 
-> The app's transmitter/receiver **logic** is fully unit-tested with
-> `MockSensors` (Vitest). The native modules (`modules/expo-shusseki-*`) are the
-> only device-dependent code and need a real build to exercise.
+Pick **TRANSMITTER** (phone-side fallback) or **RECEIVER** (joins the ESP32's
+open `atlas` network and reports BLE/WiFi/ultrasound). Set
+`EXPO_PUBLIC_SERVER_URL` to the server address (default
+`http://10.0.2.2:8787` for the Android emulator). The receiver console shows
+raw sensor values, per-modality and fused confidence, the server verdict and a
+live BLE/WiFi trace.
 
-### Super-user console (HUD)
-The UI is a dense NERV-style developer console for researchers, not a consumer
-app — every screen dumps raw sensor values, per-modality + fused confidences,
-server verdicts with RTT, roll code state, and a **ROOM MONITOR** that lists
-*every* device currently reporting to the session (so one phone shows the other's
-presence). The receiver console also draws a **live BLE/WiFi RSSI trace**
-(0.5 s WiFi, 5 s BLE), so you can walk the phone away and watch the signal
-fall. The local verdict is **absent only when the 5-sample average WiFi is
-weaker than −55 dBm AND the latest BLE is weaker than −65 dBm**; either channel
-strong (or a single WiFi spike) keeps it present. Each monitor row carries the
-device's three-channel **link stats**
-(`B● W◐ U○` + quality + age): the receiver sees its own link to the
-transmitter, and the transmitter sees every receiver's link back to it.
-Japanese labels (送信/受信/診断/試験) remain as brand accents behind the plain
-TRANSMITTER/RECEIVER terms. The server URL is editable on-device (CONFIG
-panel), so each phone can point at the PC — `adb reverse` on USB devices, or
-the PC's LAN IP for a Wi-Fi phone — without a rebuild. Sessions auto-ensure on
-the server, so no manual `POST /api/sessions` step is needed to just run a
-report loop.
+The receiver's identity is locked after enrollment. To change the student or
+RFID UID, clear the app data, or edit the roster from the server register page.
 
-## Deployment & versioning
+## ESP32 room node
 
-Every patch that is deployed to hardware is stamped with a build number from
-`app/src/version.ts` (`BUILD`). Bump it on every change you ship, then deploy a
-**self-contained APK** (JS bundle embedded — no Metro dependency, so there is no
-stale-bundle ambiguity):
+Wiring, pin map and RFID card details: [`docs/hardware-wiring.md`](docs/hardware-wiring.md).
 
 ```bash
-# bump BUILD in app/src/version.ts, then:
-cd app/android
-ENTRY_FILE=src/main.tsx gradlew assembleRelease   # see "Known issues" below
-adb install -r app/build/outputs/apk/release/app-release.apk
-adb logcat -s ReactNativeJS | grep "version"      # confirms the deployed patch
+cd esp32-transmitter
+pio run                 # build
+pio run -t upload       # flash (115200 baud)
+pio device monitor      # serial log
 ```
 
-The running version is also shown on the app's home screen
-(`device: <id> · vX.Y.Z+BUILD`) and logged to logcat at startup
-(`[app] version vX.Y.Z+BUILD`), so you can always confirm which patch a device
-is actually running.
+The node:
 
-For USB-connected devices the fusion server is reachable via
-`adb reverse tcp:8787 tcp:8787` (the server binds `0.0.0.0`).
+- advertises `esp32-tx1|<TOTP code>` over BLE;
+- raises the open `atlas` SoftAP and routes clients to the LAN via NAPT;
+- emits four alternating 20/19.6 kHz bursts on GPIO27;
+- polls the server for the live attendance count and shows it on the LCD;
+- reads MFRC522 cards and posts the UID to the attendance register;
+- shows a student's name (scrolling if long) and roll number on a tap;
+- beeps once for a known card, twice for an unknown/new card or saved mapping.
 
-## What is implemented vs. next
+## Tests and deployment
 
-**Done:** rolling-code TOTP + server re-verification, per-modality confidence,
-fusion (noisy-or / average / weighted), evaluation metrics, the fusion server
-with the full ingest→presence→evaluate pipeline, the two-mode Expo app with a
-clean sensor seam, native-module scaffolds (BLE/WiFi/ultrasonic/biometric), the
-comparative evaluation runner, and build versioning. The ESP32 room node
-(`esp32-transmitter/`) hosts the open `atlas` AP and BLE beacon. The receiver
-draws a 0.5 s BLE/WiFi trace with a local signal rule, and the server serves a
-live dashboard (`/dashboard/:id`). Verified on real hardware
-(Pixel 8a + Galaxy M34): BLE advertise/scan, WiFi RSSI, LocalOnlyHotspot, and
-the ultrasonic mic all exercise on-device; the ultrasonic speaker→mic loopback
-does **not** pass ~18.5 kHz on the Pixel 8a (see PLAN §3/§4 — expected on
-consumer hardware).
+```bash
+npm test
+npm run typecheck
+```
 
-**Next (PLAN §5 + todo.md):** spikes on `LocalOnlyHotspot` lifecycle,
-background-mic reliability, and cross-OEM WiFi RSSI; lock the BLE combining rule
-+ sample size; run controlled positive/negative data-collection sessions per
-`docs/test-protocol.md`. Also outstanding: fix the Android **release** bundling
-in this monorepo (`app/src/lib/../android` is gitignored/prebuild-generated, so
-the `entryFile`/`root` overrides that make `assembleRelease` bundle are
-local-only), root-cause the intermittent native `requestPermissionsAsync` hang,
-and close the server round-trip over `adb reverse`.
+Every APK carries a build number from `app/src/version.ts` (`BUILD`), shown on
+the home screen and logged at startup as `[app] version vX.Y.Z+BUILD`. Build a
+self-contained release APK with the Expo/Android toolchain and install it with
+`adb install -r app/build/outputs/apk/release/app-release.apk`.
+
+For USB-connected devices the server is reachable with
+`adb reverse tcp:8787 tcp:8787`.
+
+## Current limitations
+
+- A single ultrasonic beacon is not a strict room boundary: 20 kHz leaks
+  through open doors and walls, so "tone heard" only means the tone is present.
+  The BLE/WiFi gate is the actual room-presence decision.
+- The node has no offline queue. A card tap made while the server is unreachable
+  still resolves from NVS and displays on the LCD, but is not replayed later.
+- The phone receiver must be on the room network to reach the server; the
+  `atlas` SoftAP + NAPT path is the fallback.

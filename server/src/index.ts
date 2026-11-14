@@ -585,9 +585,9 @@ export function createApp(store: Store, sessions: SessionRegistry): Hono {
     return c.json({ ok: true });
   });
 
-  // RFID / offline card tap. The ESP32 queues these on its microSD when WiFi
-  // is unavailable and replays them here when it reconnects. A mark is
-  // intentionally non-expiring: it is only cleared by an attendance reset.
+  // RFID / offline card tap. The ESP32 resolves UID bindings from NVS and posts
+  // the tap to the session; there is no local queue. A mark is intentionally
+  // non-expiring: it is only cleared by an attendance reset.
   app.post("/api/sessions/:id/rfid", async (c) => {
     const id = c.req.param("id");
     const config = sessions.get(id);

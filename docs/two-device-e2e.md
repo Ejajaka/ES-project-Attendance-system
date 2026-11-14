@@ -18,7 +18,7 @@ The current app flow, automated by `scripts/device-e2e.sh`:
    starts the fusion server, and sets up `adb reverse tcp:8787` on both.
 2. Both phones pick the same **preset room** (default ROOM 01).
 3. TX phone: `TRANSMITTER` → `UNIT-01 ENGAGE`. It broadcasts the BLE beacon
-   and the 1.8 kHz presence stamp. It still raises a LocalOnlyHotspot and
+   and the 20 kHz presence stamp. It still raises a LocalOnlyHotspot and
    announces it, as the legacy two-phone fallback.
 4. RX phone: `RECEIVER` → `UNIT-01 ENGAGE`. It joins the fixed open `atlas`
    network (no password). It then reports BLE/WiFi/ultrasound every 5 s.

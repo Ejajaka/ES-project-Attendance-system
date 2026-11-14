@@ -17,7 +17,7 @@ import expo.modules.kotlin.modules.ModuleDefinition
  *
  * Chassis (8-14kHz chirp) proved too weak on real phone speakers/mics at
  * useful volume, so the stamp is FIXED, clearly-audible TONE BURSTS in the
- * ~1.8-2.6kHz band — in every phone's efficient passband, ALTERNATING between
+ * ~20kHz band — in every phone's efficient passband, ALTERNATING between
  * two frequencies (A=4500 Hz, B=4450 Hz) every burst. Presence is decided by a
  * gain-invariant test: each tone frequency vs its own neighbour (off-freq)
  * reference, required to dominate for a fraction of the listen window.

@@ -47,7 +47,7 @@ Run in order; each check prints ✓/✗ + details to the on-screen log:
 6. WiFi observation → SSID/RSSI of current network (location services must be ON)
 7. Hotspot start/stop → prints generated SSID + passphrase
 8. Ultrasonic loopback "123456" → the big one: decoded code must equal `123456`.
-   ✗ here means speaker/mic can't pass ~18.5 kHz — a *result*, not a bug.
+   ✗ here means speaker/mic can't pass ~20 kHz — a *result*, not a bug.
 9. Server round-trip → needs step 0b (or LAN-IP rebuild) + server running.
 
 ## 3. Watch logs while testing

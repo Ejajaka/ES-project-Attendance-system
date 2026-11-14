@@ -39,7 +39,7 @@ export interface Store {
   /** Add a student to the roster if absent (auto-enroll from a report). */
   ensureStudent(
     sessionId: string,
-    student: { studentId: string; name?: string; deviceId?: string },
+    student: { studentId: string; name?: string; deviceId?: string; rfidUid?: string },
   ): void;
   /** Fold one presence sample into the device's attendance timeline. */
   recordSample(

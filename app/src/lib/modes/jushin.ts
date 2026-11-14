@@ -61,7 +61,7 @@ export class JushinController {
   }
 
   /**
-   * Biometric is a supporting anti-spoof check (CONTEXT.md) — a missing sensor
+   * Biometric is a supporting anti-spoof check - a missing sensor
    * or a cancelled prompt must never block attendance. Failures degrade to a
    * recorded "not verified" check instead of throwing.
    */

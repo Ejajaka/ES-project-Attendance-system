@@ -2,7 +2,7 @@ import { fuse, decide, type Combiner } from "./fusion";
 import type { Modality } from "./types";
 
 /**
- * Evaluation math for the comparative study (PLAN.md §2): each modality and the
+ * Evaluation math for the comparative study: each modality and the
  * fused result are scored against ground truth — both per-instance (when
  * identity linkage exists) and room-level (headcount).
  */

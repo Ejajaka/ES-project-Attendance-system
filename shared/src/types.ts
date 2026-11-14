@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-/** The two runtime modes of the app (see CONTEXT.md). */
+/** The two runtime modes of the app. */
 export const ModeSchema = z.enum(["soshin", "jushin"]);
 export type Mode = z.infer<typeof ModeSchema>;
 
@@ -94,7 +94,7 @@ export const DeviceReportSchema = z.object({
 });
 export type DeviceReport = z.infer<typeof DeviceReportSchema>;
 
-/** Manual headcount ground truth for a session (see CONTEXT.md). */
+/** Manual headcount ground truth for a session. */
 export const GroundTruthSchema = z.object({
   sessionId: z.string(),
   roomId: z.string(),

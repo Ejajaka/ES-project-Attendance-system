@@ -1,6 +1,6 @@
 # ADR 0001 — Jushin never transmits ultrasound
 
-**Status:** Accepted (decided in PLAN.md §3)
+**Status:** Accepted
 
 ## Context
 A room full of phones each transmitting ultrasound would create an

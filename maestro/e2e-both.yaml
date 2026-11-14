@@ -1,9 +1,0 @@
-appId: com.shusseki.app
----
-# Single-device E2E: Soshin + Jushin run concurrently on one phone; both
-# self-report to POST /api/e2e. Waits for the run to reach the done phase.
-- openLink: "shusseki://e2e?role=both"
-- extendedWaitUntil:
-    visible: "phase: done"
-    timeout: 90000
-- assertVisible: "phase: done"

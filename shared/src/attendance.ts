@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 /**
- * Attendance model (see CONTEXT.md).
+ * Attendance model.
  *
  * Presence is continuous: each device reports every few seconds and the server
  * keeps a per-device timeline. Attendance is the roster × timeline verdict —

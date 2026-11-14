@@ -75,7 +75,7 @@ export function buildChecks(settings: Settings, serverUrl: string): Check[] {
       label: "Request all runtime permissions",
       run: async () => {
         // Native requestPermissionsAsync intermittently hangs on real devices
-        // when the permission controller isn't wired (see todo.md P5). Guard
+        // when the permission controller isn't wired. Guard
         // each request with a timeout; if the prompt itself stalls, fall back
         // to the non-prompting check — permissions are pre-granted via
         // `adb pm grant` in the runbook anyway.
@@ -193,7 +193,7 @@ export function buildChecks(settings: Settings, serverUrl: string): Check[] {
     },
     {
       id: "ultra-presence",
-      label: "Ultrasonic presence stamp (1.8kHz bursts)",
+      label: "Ultrasonic presence stamp (20 kHz bursts)",
       run: async (log) => {
         // Concurrent transmit+record (speaker→mic) presence self-test.
         const o = await ultraLoopback(3000);
@@ -446,7 +446,7 @@ export default function SmokeScreen({
         }
       />
       <ScrollView className="flex-1" contentContainerClassName="p-4 gap-4">
-        {/* Suite result — carries the maestro smoke-summary contract. */}
+        {/* Suite result - carries the smoke-summary contract. */}
         <Card>
           <CardHeader>
             <View className="flex-row items-center justify-between gap-2">

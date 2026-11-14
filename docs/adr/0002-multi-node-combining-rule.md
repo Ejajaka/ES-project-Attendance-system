@@ -13,7 +13,7 @@ number means.
 Default to **`max`** (equivalently `best` for a monotonic map): if *any* node
 sees a strong signal, the device is treated as "within walkable distance of the
 room." BLE/WiFi are treated as approximate, supplementary proximity sensors,
-not precise localizers (PLAN §1, CONTEXT.md).
+not precise localizers.
 
 `avg` is also implemented and can be selected per session for a stricter, more
 conservative estimate.

@@ -63,7 +63,7 @@ function parseLaunch(url: string | null): Launch | null {
     const role = (params["role"] ?? "both") as E2eRole;
     return { screen: "e2e", role };
   }
-  // Headless console auto-engage (adb/maestro driven): shusseki://rx | shusseki://tx.
+  // Headless console auto-engage (adb driven): shusseki://rx | shusseki://tx.
   // `rx` also accepts identity: shusseki://rx?roll=bl.1&name=Ada%20Lovelace
   // and `bio=0` to run without ever raising a biometric prompt.
   if (path === "rx") {
