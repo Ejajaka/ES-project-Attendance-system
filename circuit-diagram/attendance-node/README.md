@@ -3,7 +3,9 @@
 KiCad 10 schematic for a DOIT ESP32 DEVKIT V1 (30-pin) that drives an I2C 1602
 LCD, an RFID-RC522 reader, a WiFi status LED and two buzzers (active + passive /
 ultrasonic). The current firmware does not use a microSD card or push buttons;
-the older schematic symbols for those parts are not populated.
+the older schematic symbols for those parts are not populated. The buzzers are
+wired directly to GPIO26/27 in the current build; the KiCad sheet still shows
+the old transistor driver pads (Q1/Q2/R4/R5/D3), which are unpopulated.
 
 Open `attendance-node.kicad_pro` in KiCad to edit the sheet. The plots
 `attendance-node.pdf`, `attendance-node.svg` and `attendance-node.png` show the
@@ -26,11 +28,11 @@ down the right side from IO23 to 3V3.
 | RC522 RST | IO17 | 24 | J2 pin 7 | Hard reset for the reader |
 | RC522 IRQ | - | - | J2 pin 5 | Open. The firmware polls the reader |
 | WiFi LED | IO25 | 11 | D1 anode (through R1) | 220-330 ohm; cathode to GND |
-| Active buzzer | IO26 | 9 | R4, then Q1 base | Q1 collector to BZ1 pin 2. BZ1 pin 1 to +5V |
-| Passive buzzer | IO27 | 10 | R5, then Q2 base | Q2 collector to BZ2 pin 2 and D3 anode. D3 cathode to +5V |
+| Active buzzer | IO26 | 9 | BZ1 pin 1 | BZ1 pin 2 to GND. Direct drive, no transistor |
+| Passive buzzer | IO27 | 10 | BZ2 pin 1 | BZ2 pin 2 to GND. Direct drive, no transistor |
 | 5V input | VIN | 15 | J4 pin 1 | J4 pin 2 to GND |
 | 3V3 rail | 3V3 | 30 | J2 pin 8 | Feeds the RC522 only |
-| Ground | GND | 14, 29 | J1.1, J2.6, J4.2, Q1.3, Q2.3 | Common ground |
+| Ground | GND | 14, 29 | J1.1, J2.6, J4.2, BZ1.2, BZ2.2 | Common ground |
 
 Module headers:
 
@@ -43,9 +45,9 @@ Module headers:
 ## Description
 
 The ESP32 DevKit V1 is the only controller on the sheet. J4 supplies 5V to the
-VIN pin. The 5V rail also feeds both buzzers and the LCD backlight. The DevKit
-regulator supplies the 3V3 rail, which feeds the RC522 only. Both ground pins of
-the DevKit connect to the common ground net.
+VIN pin. The 5V rail feeds the LCD backlight; the buzzers are driven directly
+from the 3.3V GPIO pins. The DevKit regulator supplies the 3V3 rail, which feeds
+the RC522 only. Both ground pins of the DevKit connect to the common ground net.
 
 The LCD1602 module uses the I2C bus on GPIO21 (SDA) and GPIO22 (SCL). These two
 pins match the firmware defaults in `esp32-transmitter/src/lcd.c`. The backpack
@@ -57,11 +59,12 @@ open because the firmware polls the reader.
 
 The RC522 receives 3.3V because the MFRC522 tolerates no more than 3.6V.
 
-Each buzzer has its own NPN low-side switch. GPIO26 drives the active buzzer
-through R4 and Q1. The active buzzer has a built-in oscillator, so a DC level
-makes the sound. GPIO27 drives the passive buzzer through R5 and Q2. The passive
-buzzer needs a square wave, so the firmware uses LEDC PWM at 20/19.6 kHz. D3
-clamps the coil of the passive buzzer.
+Each buzzer is wired directly to its GPIO; there is no transistor. GPIO26
+drives the active buzzer: BZ1 pin 1 to GPIO26, pin 2 to GND. The active buzzer
+has a built-in oscillator, so a DC level makes the sound. GPIO27 drives the
+passive buzzer: BZ2 pin 1 to GPIO27, pin 2 to GND. The passive buzzer needs a
+square wave, so the firmware uses LEDC PWM at 20/19.6 kHz. A piezo element does
+not need a flyback diode; a magnetic buzzer would.
 
 GPIO25 drives the green WiFi status LED through R1. Do not use GPIO34, GPIO35,
 GPIO36 and GPIO39 as outputs. These pins accept input only. GPIO0, GPIO2,

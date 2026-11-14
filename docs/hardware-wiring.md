@@ -24,8 +24,8 @@ WiFi. No local queue is kept.
 | **GPIO18** | MFRC522 RFID | SCK | |
 | **GPIO19** | MFRC522 RFID | MISO | |
 | **GPIO23** | MFRC522 RFID | MOSI | |
-| **GPIO26** | Active buzzer | + | NPN low-side driver; 1 k base resistor |
-| **GPIO27** | Passive buzzer / ultrasound | + | NPN low-side driver; 1 k base resistor |
+| **GPIO26** | Active buzzer | + | direct drive; - to GND; 3.3 V type |
+| **GPIO27** | Passive buzzer / ultrasound | + | direct drive; - to GND; piezo, 20 kHz |
 | **5V / VIN** | LCD backpack VCC | VCC | |
 | **3V3** | MFRC522 VCC | 3.3 V | **never 5 V** on the RFID logic |
 | **GND** | all modules | GND | common ground |
@@ -46,14 +46,20 @@ IRQ         (not connected)
 
 ### Buzzer and ultrasonic speaker
 
+Both buzzers are wired **directly** to the ESP32; there is no transistor.
+
 - **GPIO26 - active buzzer:** one short beep = known card; two short beeps =
-  unknown/new card or a saved mapping. Drive a 5 V buzzer through an NPN
-  transistor (1 k base resistor) with the emitter to GND and a flyback diode
-  across the buzzer.
+  unknown/new card or a saved mapping. Connect buzzer **+ to GPIO26** and
+  **- to GND**. Use a 3.3 V active buzzer; a 5 V buzzer may be too quiet or
+  fail to start from a 3.3 V GPIO. If the buzzer draws more than about 12 mA,
+  switch it through an NPN transistor instead of driving it directly.
 - **GPIO27 - passive buzzer / ultrasonic speaker:** the firmware emits four
   alternating 20 kHz / 19.6 kHz bursts (120 ms on, 220 ms gap), repeated.
-  Connect a piezo tweeter through an NPN driver; the phone receiver listens for
-  this pattern. The ESP32 does not need a microphone.
+  Connect the piezo **+ to GPIO27** and **- to GND**; a 100-330 ohm series
+  resistor is optional. A piezo is not inductive, so no flyback diode is
+  needed. If you use a magnetic/coil passive buzzer, add a diode across it and
+  prefer a transistor driver. The phone receiver listens for the 20 kHz
+  pattern; the ESP32 does not need a microphone.
 
 ### LCD
 
